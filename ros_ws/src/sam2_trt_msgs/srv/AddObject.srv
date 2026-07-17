@@ -1,0 +1,11 @@
+uint8 POINT=0
+uint8 BOX=1
+uint8 kind
+float32 x0
+float32 y0
+float32 x1
+float32 y1
+---
+bool success
+int32 object_id
+string message

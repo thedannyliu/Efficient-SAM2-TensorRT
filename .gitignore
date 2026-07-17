@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Device-specific/generated artifacts must never be committed.
+artifacts/
+bundles/
+engines/
+results/
+logs/
+*.engine
+*.plan
+*.onnx
+*.cache
+environment.lock.json
+*.pt
+*.pth
+*.ckpt
+*.bag
+*.mcap
+*.mp4

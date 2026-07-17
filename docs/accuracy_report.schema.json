@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SAM2 accuracy report",
+  "type": "object",
+  "required": ["metric_unit", "metrics", "binary_masks_npz"],
+  "properties": {
+    "metric_unit": {"const": "percentage_points"},
+    "metrics": {
+      "type": "object",
+      "required": ["sav_jf", "image_miou"],
+      "properties": {
+        "sav_jf": {"type": "number"},
+        "image_miou": {"type": "number"}
+      },
+      "additionalProperties": true
+    },
+    "binary_masks_npz": {"type": "string"}
+  },
+  "additionalProperties": true
+}

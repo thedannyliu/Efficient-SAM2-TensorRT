@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sam2-tensorrt-thor"
+version = "0.1.0"
+description = "Accuracy-gated SAM2/SAM2-TinyViT TensorRT deployment for Jetson Thor"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+export = ["onnx>=1.16", "onnxscript>=0.2", "torch>=2.5"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+sam2-trt = "sam2_trt.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sam2_trt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

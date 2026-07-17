@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>sam2_trt_ros</name>
+  <version>0.1.0</version>
+  <description>Latest-frame ROS 2 camera integration for SAM2 TensorRT.</description>
+  <maintainer email="maintainer@example.com">SAM2 TensorRT maintainers</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sam2_trt_msgs</depend>
+  <exec_depend>launch_ros</exec_depend>
+</package>

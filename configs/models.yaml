@@ -1,0 +1,50 @@
+schema_version: 1
+models:
+  sam2.1-hiera-tiny:
+    encoder: sam2
+    config: configs/sam2.1/sam2.1_hiera_t.yaml
+    checkpoint_env: SAM2_HIERA_TINY_CHECKPOINT
+    downstream: sam2.1-hiera-tiny
+  sam2.1-hiera-small:
+    encoder: sam2
+    config: configs/sam2.1/sam2.1_hiera_s.yaml
+    checkpoint_env: SAM2_HIERA_SMALL_CHECKPOINT
+    downstream: sam2.1-hiera-small
+  sam2.1-hiera-base-plus:
+    encoder: sam2
+    config: configs/sam2.1/sam2.1_hiera_b+.yaml
+    checkpoint_env: SAM2_HIERA_BASE_PLUS_CHECKPOINT
+    downstream: sam2.1-hiera-base-plus
+  sam2.1-hiera-large:
+    encoder: sam2
+    config: configs/sam2.1/sam2.1_hiera_l.yaml
+    checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
+    downstream: sam2.1-hiera-large
+  sam2.1-tinyvit-21m:
+    encoder: tinyvit
+    tinyvit_embed_dim: 384
+    checkpoint_env: SAM2_TINYVIT_21M_CHECKPOINT
+    checkpoint_filename: tv21m_mse_cos.pt
+    downstream: sam2.1-hiera-large
+    downstream_checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
+  sam2.1-tinyvit-11m:
+    encoder: tinyvit
+    tinyvit_embed_dim: 256
+    checkpoint_env: SAM2_TINYVIT_11M_CHECKPOINT
+    checkpoint_filename: tv11m_mse_cos.pt
+    downstream: sam2.1-hiera-large
+    downstream_checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
+  sam2.1-tinyvit-5m:
+    encoder: tinyvit
+    tinyvit_embed_dim: 160
+    checkpoint_env: SAM2_TINYVIT_5M_CHECKPOINT
+    checkpoint_filename: tv5_proj_sam21l_msehr_cos025_best.pt
+    downstream: sam2.1-hiera-large
+    downstream_checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
+
+engine_profiles:
+  object_batches: [1, 2, 4, 8]
+  image_size: 1024
+  max_objects: 8
+  num_maskmem: 7
+  max_object_pointers: 16
