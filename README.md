@@ -101,3 +101,6 @@ changes after Thor profiling and real-input calibration, then run the same gate.
 
 See [docs/thor_runbook.md](docs/thor_runbook.md) for C++/ROS build, services, topics,
 benchmark capture, and acceptance procedure.
+
+PACE job history, failures, fixes, and current measurements are recorded in
+[docs/pace_experiments.md](docs/pace_experiments.md).
