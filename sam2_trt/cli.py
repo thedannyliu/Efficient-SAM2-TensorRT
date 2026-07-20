@@ -13,6 +13,7 @@ from .model_registry import load_registry, resolve_model
 from .probe import write_probe
 from .validate import accuracy_gate, write_gate_result
 from .trt_benchmark import benchmark_engine, write_engine_benchmark
+from .pytorch_benchmark import benchmark_pytorch_graphs, write_pytorch_graph_benchmark
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -72,6 +73,19 @@ def _parser() -> argparse.ArgumentParser:
     engine_benchmark.add_argument("--warmup", type=int, default=20)
     engine_benchmark.add_argument("--runs", type=int, default=100)
     engine_benchmark.add_argument("--output", required=True)
+
+    pytorch_graphs = subparsers.add_parser(
+        "benchmark-pytorch-graphs", help="microbenchmark the matching PyTorch export graphs"
+    )
+    pytorch_graphs.add_argument("--model-id", required=True)
+    pytorch_graphs.add_argument("--checkpoint")
+    pytorch_graphs.add_argument("--registry")
+    pytorch_graphs.add_argument("--sam2-root", required=True)
+    pytorch_graphs.add_argument("--batch", type=int, choices=(1, 2, 4), default=1)
+    pytorch_graphs.add_argument("--warmup", type=int, default=20)
+    pytorch_graphs.add_argument("--runs", type=int, default=100)
+    pytorch_graphs.add_argument("--tf32", action="store_true")
+    pytorch_graphs.add_argument("--output", required=True)
 
     verify = subparsers.add_parser("verify-bundle", help="verify checkpoint and engine hashes")
     verify.add_argument("--bundle-dir", required=True)
@@ -146,6 +160,23 @@ def main(argv: list[str] | None = None) -> int:
             runs=args.runs,
         )
         write_engine_benchmark(result, args.output)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "benchmark-pytorch-graphs":
+        spec = resolve_model(
+            args.model_id,
+            registry_path=args.registry,
+            checkpoint=args.checkpoint,
+        )
+        result = benchmark_pytorch_graphs(
+            spec,
+            sam2_root=args.sam2_root,
+            batch=args.batch,
+            warmup=args.warmup,
+            runs=args.runs,
+            allow_tf32=args.tf32,
+        )
+        write_pytorch_graph_benchmark(result, args.output)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     if args.command == "verify-bundle":
