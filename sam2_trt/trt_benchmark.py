@@ -45,7 +45,7 @@ def benchmark_engine(
     if engine is None:
         raise RuntimeError(f"failed to deserialize {engine_path}")
     context = engine.create_execution_context()
-    stream = torch.cuda.current_stream()
+    stream = torch.cuda.Stream()
     profile = 0 if role == "encoder" else (1, 2, 4, 8).index(batch)
     if engine.num_optimization_profiles > 1:
         if not context.set_optimization_profile_async(profile, stream.cuda_stream):
@@ -63,18 +63,19 @@ def benchmark_engine(
             inputs.append(name)
         else:
             outputs.append(name)
-    for name in inputs + outputs:
-        shape = tuple(context.get_tensor_shape(name))
-        if any(dimension < 0 for dimension in shape):
-            raise RuntimeError(f"unresolved dynamic output shape for {name}: {shape}")
-        tensor = torch.zeros(
-            shape,
-            dtype=_torch_dtype(torch, trt, engine.get_tensor_dtype(name)),
-            device="cuda",
-        )
-        tensors[name] = tensor
-        if not context.set_tensor_address(name, tensor.data_ptr()):
-            raise RuntimeError(f"failed to bind {name}")
+    with torch.cuda.stream(stream):
+        for name in inputs + outputs:
+            shape = tuple(context.get_tensor_shape(name))
+            if any(dimension < 0 for dimension in shape):
+                raise RuntimeError(f"unresolved dynamic output shape for {name}: {shape}")
+            tensor = torch.zeros(
+                shape,
+                dtype=_torch_dtype(torch, trt, engine.get_tensor_dtype(name)),
+                device="cuda",
+            )
+            tensors[name] = tensor
+            if not context.set_tensor_address(name, tensor.data_ptr()):
+                raise RuntimeError(f"failed to bind {name}")
 
     for _ in range(warmup):
         if not context.execute_async_v3(stream.cuda_stream):
