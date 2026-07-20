@@ -89,7 +89,8 @@ All GPU jobs below used QOS `embers`; no `inferno` resources were used.
 | `11313494` | A100 | Pending | Full TensorRT build and latency run. |
 | `11314743` | RTX6000 | Pending | Full V0.3 export/build/latency run. |
 | `11314933` | H100 | Completed | Same-checkpoint PyTorch H100 image-predictor baseline: 19.0847 ms predictor and 20.1773 ms total pipeline. |
-| `11315064` | H100 | Pending | Rebuild track with profiles 1/2/4, then benchmark all usable roles and batches. |
+| `11315064` | H100 | Completed | Track profiles 1/2/4 built and every requested engine microbenchmark completed. |
+| `11315246` | H100 | Pending | Exact matching PyTorch export-graph microbenchmark with TF32 enabled. |
 
 ## Partial TensorRT measurements
 
@@ -110,6 +111,31 @@ before the non-default-stream benchmark correction.
 
 No acceleration percentage is claimed from this table because the PyTorch
 baseline is from an L40S and the TensorRT result is from an RTX6000.
+
+Job `11315064` produced the first complete H100 TensorRT TF32 engine timings.
+These measure preallocated graph execution on a non-default CUDA stream:
+
+| Graph | Batch | Mean latency | Object throughput |
+| --- | ---: | ---: | ---: |
+| Encoder | 1 | 4.9073 ms | 203.78/s |
+| Point prompt | 1 | 0.9793 ms | 1021.09/s |
+| Point prompt | 2 | 1.4336 ms | 1395.04/s |
+| Point prompt | 4 | 2.2793 ms | 1754.95/s |
+| Point prompt | 8 | 4.0994 ms | 1951.51/s |
+| Box prompt | 1 | 0.9824 ms | 1017.94/s |
+| Box prompt | 2 | 1.4138 ms | 1414.59/s |
+| Box prompt | 4 | 2.2429 ms | 1783.38/s |
+| Box prompt | 8 | 4.0256 ms | 1987.31/s |
+| Track | 1 | 4.5667 ms | 218.98/s |
+| Track | 2 | 8.1348 ms | 245.86/s |
+| Track | 4 | 14.9030 ms | 268.40/s |
+
+Encoder plus initial point graph execution is 5.8866 ms, or 169.88 graph
+executions per second. Comparing that sum directly with the standard H100
+image-predictor result suggests a 69.2% latency reduction (3.24x), but this is
+explicitly provisional: the predictor includes preprocessing/postprocessing and
+uses a different mask-selection policy. Job `11315246` provides the required
+same-graph PyTorch denominator.
 
 ## Current interpretation and next experiments
 
