@@ -54,6 +54,14 @@ def _network_flags(trt):
     return flags
 
 
+def _profile_batches(role: str) -> tuple[int, ...]:
+    if role == "encoder":
+        return (1,)
+    if role == "track_step":
+        return (1, 2, 4)
+    return (1, 2, 4, 8)
+
+
 def build_engine(
     onnx_path: str | Path,
     engine_path: str | Path,
@@ -84,8 +92,7 @@ def build_engine(
         cache = config.create_timing_cache(payload)
         config.set_timing_cache(cache, ignore_mismatch=False)
 
-    profile_batches = (1,) if role == "encoder" else (1, 2, 4, 8)
-    for batch in profile_batches:
+    for batch in _profile_batches(role):
         dynamic_inputs = [
             network.get_input(index)
             for index in range(network.num_inputs)

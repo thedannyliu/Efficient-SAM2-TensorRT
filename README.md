@@ -15,7 +15,9 @@ The runtime is split into four strongly typed TensorRT graphs:
 
 The three TinyViT models reuse the SAM2.1-L prompt/track graphs. Memory attention is not
 padded: objects are bucketed by actual memory/pointer length, while temporal positions
-remain per object. Object batches use TensorRT profiles 1/2/4/8 and ignore padded rows.
+remain per object. Prompt batches use TensorRT profiles 1/2/4/8. Track batches use
+profiles 1/2/4, and groups of five to eight objects are split into two launches because
+TensorRT 11 cannot build the worst-case batch-8 memory-attention profile.
 
 ## What is implemented
 

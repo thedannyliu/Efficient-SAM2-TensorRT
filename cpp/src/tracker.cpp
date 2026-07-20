@@ -255,11 +255,17 @@ struct Tracker::Impl {
       buckets[{selected.memories.size(), selected.pointers.size()}].push_back({&object, std::move(selected)});
     }
     for (auto& [key, entries] : buckets) {
-      std::vector<ObjectState*> group;
-      std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
-      for (auto& [object, selected] : entries) { group.push_back(object); selections.push_back(std::move(selected)); }
-      auto output = run_track_group(encoded, group, selections, width, height);
-      masks.insert(masks.end(), std::make_move_iterator(output.begin()), std::make_move_iterator(output.end()));
+      for (std::size_t begin = 0; begin < entries.size(); begin += 4) {
+        const std::size_t end = std::min(begin + 4, entries.size());
+        std::vector<ObjectState*> group;
+        std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
+        for (std::size_t index = begin; index < end; ++index) {
+          group.push_back(entries[index].first);
+          selections.push_back(std::move(entries[index].second));
+        }
+        auto output = run_track_group(encoded, group, selections, width, height);
+        masks.insert(masks.end(), std::make_move_iterator(output.begin()), std::make_move_iterator(output.end()));
+      }
     }
     ++frame_index;
     return masks;
