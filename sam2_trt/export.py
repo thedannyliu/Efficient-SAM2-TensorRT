@@ -224,6 +224,28 @@ def _modules(torch, downstream, encoder, image_position):
     )
 
 
+def _dynamic_input_shapes(torch, input_names, dynamic_axes):
+    limits = {
+        "batch": (1, 8),
+        "memory_frames": (1, 7),
+        "pointer_frames": (1, 16),
+    }
+    dimensions = {}
+    shapes = []
+    for input_name in input_names:
+        axes = dynamic_axes.get(input_name, {})
+        shape = {}
+        for axis, dimension_name in axes.items():
+            if dimension_name not in dimensions:
+                minimum, maximum = limits[dimension_name]
+                dimensions[dimension_name] = torch.export.Dim(
+                    dimension_name, min=minimum, max=maximum
+                )
+            shape[axis] = dimensions[dimension_name]
+        shapes.append(shape)
+    return tuple(shapes)
+
+
 def _export_one(torch, module, inputs, output: Path, input_names, output_names, dynamic_axes):
     output.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
@@ -234,7 +256,7 @@ def _export_one(torch, module, inputs, output: Path, input_names, output_names, 
         output_names=output_names,
         opset_version=18,
         dynamo=True,
-        dynamic_axes=dynamic_axes,
+        dynamic_shapes=_dynamic_input_shapes(torch, input_names, dynamic_axes),
         external_data=False,
         verify=False,
     )
@@ -296,14 +318,15 @@ def export_bundle(
             output / "encoder.onnx",
             ["image"],
             ["high_res_s0", "high_res_s1", "image_embedding", "image_position"],
-            {"image": {0: "batch"}, "high_res_s0": {0: "batch"}, "high_res_s1": {0: "batch"}, "image_embedding": {0: "batch"}, "image_position": {0: "batch"}},
+            {},
         )
 
-        high0 = torch.zeros(1, 32, 256, 256, device=device, dtype=torch_dtype)
-        high1 = torch.zeros(1, 64, 128, 128, device=device, dtype=torch_dtype)
-        embedding = torch.zeros(1, 256, 64, 64, device=device, dtype=torch_dtype)
-        coords = torch.zeros(1, 2, 2, device=device, dtype=torch_dtype)
-        labels = torch.tensor([[2, 3]], dtype=torch.int32, device=device)
+        export_batch = 2
+        high0 = torch.zeros(export_batch, 32, 256, 256, device=device, dtype=torch_dtype)
+        high1 = torch.zeros(export_batch, 64, 128, 128, device=device, dtype=torch_dtype)
+        embedding = torch.zeros(export_batch, 256, 64, 64, device=device, dtype=torch_dtype)
+        coords = torch.zeros(export_batch, 2, 2, device=device, dtype=torch_dtype)
+        labels = torch.tensor([[2, 3]], dtype=torch.int32, device=device).expand(export_batch, -1)
         batch_outputs = {name: {0: "batch"} for name in common_outputs}
         if reuse_downstream_dir:
             source = Path(reuse_downstream_dir).resolve()
@@ -335,15 +358,16 @@ def export_bundle(
                     },
                 )
 
-            mask_memory = torch.zeros(1, 4096, 1, 64, device=device, dtype=torch_dtype)
+            mask_memory = torch.zeros(2, 4096, export_batch, 64, device=device, dtype=torch_dtype)
             mask_pos = torch.zeros_like(mask_memory)
-            mask_tpos = torch.zeros(1, 1, dtype=torch.int64, device=device)
-            pointer = torch.zeros(1, 1, 256, device=device, dtype=torch_dtype)
-            pointer_distance = torch.zeros(1, 1, dtype=torch.int64, device=device)
+            mask_tpos = torch.zeros(2, export_batch, dtype=torch.int64, device=device)
+            pointer = torch.zeros(2, export_batch, 256, device=device, dtype=torch_dtype)
+            pointer_distance = torch.zeros(2, export_batch, dtype=torch.int64, device=device)
+            track_position = image_position.expand(export_batch, -1, -1, -1)
             _export_one(
                 torch,
                 track_module,
-                (high0, high1, embedding, image_position, mask_memory, mask_pos, mask_tpos, pointer, pointer_distance),
+                (high0, high1, embedding, track_position, mask_memory, mask_pos, mask_tpos, pointer, pointer_distance),
                 output / "track_step.onnx",
                 ["high_res_s0", "high_res_s1", "image_embedding", "image_position", "mask_memory", "mask_memory_position", "mask_temporal_position", "object_pointers", "pointer_frame_distance"],
                 common_outputs,
