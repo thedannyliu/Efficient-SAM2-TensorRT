@@ -11,6 +11,7 @@ from typing import Sequence
 
 from .manifest import BundleManifest, git_revision
 from .model_registry import ModelSpec
+from .real_rope import patch_real_rope
 
 
 def _prepend_import_path(path: str | Path | None):
@@ -268,6 +269,7 @@ def export_bundle(
             )
     downstream.to(dtype=torch_dtype)
     encoder.to(dtype=torch_dtype)
+    patched_rope_modules = patch_real_rope(downstream)
 
     with torch.inference_mode():
         dummy = torch.zeros(1, 3, 1024, 1024, device=device, dtype=torch_dtype)
@@ -375,6 +377,7 @@ def export_bundle(
         os.fspath(Path(reuse_downstream_dir).resolve()) if reuse_downstream_dir else None
     )
     manifest.environment["task_model_load"] = task_load_summary
+    manifest.environment["real_rope_modules"] = patched_rope_modules
     manifest.write(output / "manifest.json")
     (output / "export.json").write_text(
         json.dumps(
