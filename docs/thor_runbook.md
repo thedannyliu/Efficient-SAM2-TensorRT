@@ -1,5 +1,9 @@
 # Thor deployment and acceptance runbook
 
+完整的 environment、Thor paths、engine commands、recorded-video/RealSense ROS
+smoke 與 troubleshooting 請先看
+[thor_testing_guide.md](thor_testing_guide.md)。本頁保留精簡的 acceptance reference。
+
 ## 1. Inputs and provenance
 
 Record these before exporting:

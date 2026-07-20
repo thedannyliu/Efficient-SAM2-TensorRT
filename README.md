@@ -23,8 +23,8 @@ TensorRT 11 cannot build the worst-case batch-8 memory-attention profile.
 
 - Seven-model registry with exact checkpoint-path resolution and SHA256 recording.
 - ONNX export for encoder/prompt/track graphs in FP32, FP16, or BF16.
-- Thor-only TensorRT builder using `enqueueV3`, strongly typed networks on TensorRT 10,
-  four object-batch profiles, and reusable timing cache.
+- Thor-only TensorRT builder using `enqueueV3`, strongly typed networks, prompt profiles
+  1/2/4/8, track profiles 1/2/4 with batch splitting, and a reusable timing cache.
 - Exact SAM2.1 forward memory and object-pointer frame selection in Python and C++.
 - C++ CUDA preprocessing, TensorRT execution, memory packing, mask postprocessing, and
   online point/box tracking for up to eight objects.
@@ -99,8 +99,10 @@ then choose the fastest candidate that passes the accuracy gate. Mixed precision
 FP8/INT8 are deliberately not auto-enabled: only introduce layer-level precision
 changes after Thor profiling and real-input calibration, then run the same gate.
 
-See [docs/thor_runbook.md](docs/thor_runbook.md) for C++/ROS build, services, topics,
-benchmark capture, and acceptance procedure.
+See [docs/thor_testing_guide.md](docs/thor_testing_guide.md) for the complete Thor
+environment, path layout, engine build, ROS video/RealSense smoke tests, measurements,
+and troubleshooting. [docs/thor_runbook.md](docs/thor_runbook.md) is the shorter
+acceptance reference.
 
 PACE job history, failures, fixes, and current measurements are recorded in
 [docs/pace_experiments.md](docs/pace_experiments.md).
