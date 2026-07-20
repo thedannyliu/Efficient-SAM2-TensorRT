@@ -12,6 +12,7 @@ from typing import Sequence
 from .manifest import BundleManifest, git_revision
 from .model_registry import ModelSpec
 from .real_rope import patch_real_rope
+from .onnx_surgery import rewrite_dynamic_batch_resize
 
 
 def _prepend_import_path(path: str | Path | None):
@@ -237,6 +238,7 @@ def _export_one(torch, module, inputs, output: Path, input_names, output_names, 
         external_data=False,
         verify=False,
     )
+    rewrite_dynamic_batch_resize(output)
 
 
 def export_bundle(
