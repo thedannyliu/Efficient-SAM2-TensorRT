@@ -46,9 +46,10 @@ def _shape_for(role: str, name: str, batch: int, endpoint: str):
 
 
 def _network_flags(trt):
-    flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-    major = int(str(trt.__version__).split(".", 1)[0])
-    if major < 11 and hasattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"):
+    flags = 0
+    if hasattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH"):
+        flags |= 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    if hasattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"):
         flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
     return flags
 
