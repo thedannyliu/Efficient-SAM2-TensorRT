@@ -2,7 +2,7 @@ import unittest
 from enum import IntEnum
 from types import SimpleNamespace
 
-from sam2_trt.build import _network_flags
+from sam2_trt.build import _network_flags, _shape_for
 
 
 class TensorRtNetworkFlagsTest(unittest.TestCase):
@@ -20,6 +20,10 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
 
         fake = SimpleNamespace(NetworkDefinitionCreationFlag=Flags)
         self.assertEqual(_network_flags(fake), 3)
+
+    def test_encoder_dynamic_batch_profile_is_fixed_to_one(self):
+        for endpoint in ("min", "opt", "max"):
+            self.assertEqual(_shape_for("encoder", "image", 1, endpoint), (1, 3, 1024, 1024))
 
 
 if __name__ == "__main__":

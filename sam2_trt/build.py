@@ -84,19 +84,24 @@ def build_engine(
         cache = config.create_timing_cache(payload)
         config.set_timing_cache(cache, ignore_mismatch=False)
 
-    if role != "encoder":
-        for batch in (1, 2, 4, 8):
-            profile = builder.create_optimization_profile()
-            for index in range(network.num_inputs):
-                tensor = network.get_input(index)
-                if any(dimension == -1 for dimension in tensor.shape):
-                    profile.set_shape(
-                        tensor.name,
-                        _shape_for(role, tensor.name, batch, "min"),
-                        _shape_for(role, tensor.name, batch, "opt"),
-                        _shape_for(role, tensor.name, batch, "max"),
-                    )
-            config.add_optimization_profile(profile)
+    profile_batches = (1,) if role == "encoder" else (1, 2, 4, 8)
+    for batch in profile_batches:
+        dynamic_inputs = [
+            network.get_input(index)
+            for index in range(network.num_inputs)
+            if any(dimension == -1 for dimension in network.get_input(index).shape)
+        ]
+        if not dynamic_inputs:
+            break
+        profile = builder.create_optimization_profile()
+        for tensor in dynamic_inputs:
+            profile.set_shape(
+                tensor.name,
+                _shape_for(role, tensor.name, batch, "min"),
+                _shape_for(role, tensor.name, batch, "opt"),
+                _shape_for(role, tensor.name, batch, "max"),
+            )
+        config.add_optimization_profile(profile)
 
     serialized = builder.build_serialized_network(network, config)
     if serialized is None:
