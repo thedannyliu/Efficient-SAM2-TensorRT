@@ -90,7 +90,7 @@ All GPU jobs below used QOS `embers`; no `inferno` resources were used.
 | `11314743` | RTX6000 | Pending | Full V0.3 export/build/latency run. |
 | `11314933` | H100 | Completed | Same-checkpoint PyTorch H100 image-predictor baseline: 19.0847 ms predictor and 20.1773 ms total pipeline. |
 | `11315064` | H100 | Completed | Track profiles 1/2/4 built and every requested engine microbenchmark completed. |
-| `11315246` | H100 | Pending | Exact matching PyTorch export-graph microbenchmark with TF32 enabled. |
+| `11315246` | H100 | Measurement completed | Exact matching PyTorch export-graph TF32 result was fully written. The scheduler records cancellation because duplicate cleanup raced with the completed epilog. |
 
 ## Partial TensorRT measurements
 
@@ -134,8 +134,23 @@ Encoder plus initial point graph execution is 5.8866 ms, or 169.88 graph
 executions per second. Comparing that sum directly with the standard H100
 image-predictor result suggests a 69.2% latency reduction (3.24x), but this is
 explicitly provisional: the predictor includes preprocessing/postprocessing and
-uses a different mask-selection policy. Job `11315246` provides the required
-same-graph PyTorch denominator.
+uses a different mask-selection policy.
+
+Job `11315246` supplied the required matching PyTorch denominator. It used the
+same H100, FP32 graph modules, batch 1, real-valued RoPE, TF32 setting, synthetic
+input shapes, 20 warmups, 100 runs, CUDA events, and a non-default CUDA stream.
+
+| Graph | PyTorch | TensorRT | Latency reduction | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Encoder | 7.0237 ms | 4.9073 ms | 30.13% | 1.43x |
+| Point prompt | 4.4223 ms | 0.9793 ms | 77.85% | 4.52x |
+| Box prompt | 4.5581 ms | 0.9824 ms | 78.45% | 4.64x |
+| Track | 17.0547 ms | 4.5667 ms | 73.22% | 3.73x |
+| Encoder + point prompt | 11.4460 ms | 5.8866 ms | 48.57% | 1.94x |
+| Encoder + track | 24.0784 ms | 9.4739 ms | 60.65% | 2.54x |
+
+These are valid same-graph execution speedups. They are not yet end-to-end
+camera-pipeline speedups and do not establish accuracy parity.
 
 ## Current interpretation and next experiments
 
@@ -144,16 +159,14 @@ batching is demonstrated for prompt graphs. The remaining immediate check is a
 usable track engine with profiles 1/2/4. Splitting a batch of eight objects into
 two batch-4 launches changes scheduling only, not model arithmetic or masks.
 
-After jobs `11314933` and `11315064` finish:
+With the first matching performance check complete:
 
-1. Compare H100 TensorRT encoder + single-mask prompt latency against the H100
-   PyTorch image predictor, using equivalent prompt policy.
-2. Add a real-input TensorRT-vs-PyTorch output-parity runner; synthetic engine
+1. Add a real-input TensorRT-vs-PyTorch output-parity runner; synthetic engine
    timing alone is not an accuracy result.
-3. Evaluate FP32 without TF32 first, then TF32 and FP16. Promote only the fastest
+2. Evaluate FP32 without TF32 first, then TF32 and FP16. Promote only the fastest
    candidate that passes the mask-level and dataset-level accuracy gates.
-4. Repeat the winning configuration on L40S for a same-GPU comparison and then
+3. Repeat the winning configuration on L40S for a same-GPU comparison and then
    rebuild all plans on Thor.
-5. On Thor, measure `camera -> preprocess -> encoder -> tail -> mask -> publish`
+4. On Thor, measure `camera -> preprocess -> encoder -> tail -> mask -> publish`
    with queue depth 1, pinned input buffers, one non-blocking CUDA stream, and no
    avoidable host/device copies.
