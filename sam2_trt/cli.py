@@ -12,6 +12,7 @@ from .lock import pin_environment
 from .model_registry import load_registry, resolve_model
 from .probe import write_probe
 from .validate import accuracy_gate, write_gate_result
+from .trt_benchmark import benchmark_engine, write_engine_benchmark
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -57,6 +58,20 @@ def _parser() -> argparse.ArgumentParser:
     benchmark = subparsers.add_parser("benchmark", help="summarize a runtime JSONL trace")
     benchmark.add_argument("--trace", required=True)
     benchmark.add_argument("--output", required=True)
+
+    engine_benchmark = subparsers.add_parser(
+        "benchmark-engine", help="microbenchmark one TensorRT engine on CUDA"
+    )
+    engine_benchmark.add_argument("--engine", required=True)
+    engine_benchmark.add_argument(
+        "--role",
+        choices=("encoder", "prompt_point_step", "prompt_box_step", "track_step"),
+        required=True,
+    )
+    engine_benchmark.add_argument("--batch", type=int, choices=(1, 2, 4, 8), default=1)
+    engine_benchmark.add_argument("--warmup", type=int, default=20)
+    engine_benchmark.add_argument("--runs", type=int, default=100)
+    engine_benchmark.add_argument("--output", required=True)
 
     verify = subparsers.add_parser("verify-bundle", help="verify checkpoint and engine hashes")
     verify.add_argument("--bundle-dir", required=True)
@@ -121,6 +136,17 @@ def main(argv: list[str] | None = None) -> int:
         summary = summarize_trace(args.trace)
         Path(args.output).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+    if args.command == "benchmark-engine":
+        result = benchmark_engine(
+            args.engine,
+            role=args.role,
+            batch=args.batch,
+            warmup=args.warmup,
+            runs=args.runs,
+        )
+        write_engine_benchmark(result, args.output)
+        print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     if args.command == "verify-bundle":
         root = Path(args.bundle_dir)
