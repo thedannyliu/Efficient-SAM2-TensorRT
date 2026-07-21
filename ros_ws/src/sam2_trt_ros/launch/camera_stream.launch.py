@@ -1,10 +1,8 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -15,14 +13,6 @@ def generate_launch_description():
             DeclareLaunchArgument("image_topic", default_value="/camera/camera/color/image_raw"),
             DeclareLaunchArgument("max_objects", default_value="8"),
             DeclareLaunchArgument("trace_path", default_value=""),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    PathJoinSubstitution(
-                        [FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"]
-                    )
-                ),
-                launch_arguments={"enable_color": "true", "enable_depth": "false"}.items(),
-            ),
             Node(
                 package="sam2_trt_ros",
                 executable="sam2_trt_node",

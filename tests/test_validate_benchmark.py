@@ -40,14 +40,28 @@ class ValidateBenchmarkTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "trace.jsonl"
             rows = [
-                {"end_to_end_ms": 10, "frame_interval_ms": 20, "dropped": 0},
-                {"end_to_end_ms": 20, "frame_interval_ms": 20, "dropped": 1},
+                {
+                    "end_to_end_ms": 10,
+                    "inference_ms": 6,
+                    "queue_wait_ms": 1,
+                    "frame_interval_ms": 0,
+                    "dropped": 0,
+                },
+                {
+                    "end_to_end_ms": 20,
+                    "inference_ms": 8,
+                    "queue_wait_ms": 2,
+                    "frame_interval_ms": 20,
+                    "dropped": 1,
+                },
             ]
             trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
             summary = summarize_trace(trace)
             self.assertEqual(summary["frames"], 2)
             self.assertEqual(summary["dropped_frames"], 1)
             self.assertEqual(summary["throughput_fps"], 50.0)
+            self.assertEqual(summary["inference_ms"]["mean"], 7.0)
+            self.assertEqual(summary["queue_wait_ms"]["p50"], 1.5)
 
 
 if __name__ == "__main__":
