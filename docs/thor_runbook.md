@@ -74,13 +74,24 @@ The 0.1 limit is interpreted as a percentage-point drop, not a relative percenta
 
 ## 4. ROS 2 RealSense integration
 
-Start the RealSense color stream and then launch:
+For the default color stream, launch the RealSense driver and TensorRT node together:
 
 ```bash
 ros2 launch sam2_trt_ros realsense.launch.py \
   bundle_dir:=/absolute/path/to/bundle \
   precision:=fp32 \
-  image_topic:=/camera/camera/color/image_raw
+  trace_path:=/absolute/path/to/results/runtime.jsonl
+```
+
+If the camera driver or a video publisher is already running, use the generic launch so
+it is not started twice:
+
+```bash
+ros2 launch sam2_trt_ros camera_stream.launch.py \
+  bundle_dir:=/absolute/path/to/bundle \
+  precision:=fp32 \
+  image_topic:=/camera/camera/color/image_raw \
+  trace_path:=/absolute/path/to/results/runtime.jsonl
 ```
 
 Add a positive point in camera-pixel coordinates:
@@ -103,16 +114,17 @@ Topics:
 - `/segmentation_mask`: first object's `mono8` mask for compatibility;
 - `/sam/object_masks`: one `mono8` message per object, with object ID appended to
   `header.frame_id`;
-- `/sam/result_json`: stamp, object IDs, and count of frames overwritten by latest-frame
-  scheduling.
+- `/sam/result_json`: stamp, object IDs, node-level timing, tracking FPS, and frames
+  overwritten by latest-frame scheduling.
 
 The first version intentionally omits corrective clicks, mask prompts, display/overlay on
 the critical path, and NITROS. Adding one point or box creates one new object.
 
 ## 5. Performance acceptance
 
-Capture JSONL rows with capture, preprocess, encoder, tail, postprocess, end-to-end, frame
-interval, and dropped-frame timings. Summarize with:
+Set `trace_path` in either launch to capture node-level queue, color conversion, combined
+TensorRT inference, mask publication, source-to-result, frame interval, FPS, and
+dropped-frame timings. Summarize with:
 
 ```bash
 sam2-trt benchmark --trace results/runtime.jsonl --output results/runtime_summary.json
@@ -123,6 +135,10 @@ tracking has started. Record power mode, clocks, camera resolution/FPS, thermal 
 precision, model/checkpoint hash, and bundle manifest. Select double-stream overlap or
 CUDA Graph capture only after a measured Thor comparison; early dynamic-memory frames
 must continue through normal `enqueueV3`.
+
+The trace does not yet split the combined `inference_ms` into encoder, tail, and
+postprocess. `end_to_end_ms` is emitted only for a nonzero input stamp in the same ROS
+clock domain as the node.
 
 ## Known validation boundary
 

@@ -14,18 +14,19 @@ layout 沿用 `EfficientSAM3-Benchmark` 的
 - 在目標 Thor 上建立 FP32、TF32、FP16 或 BF16 TensorRT plans；
 - TensorRT graph microbenchmark；
 - C++ CUDA preprocessing、encoder、point/box prompt、memory tracking 與 mask postprocess；
-- ROS 2 Jazzy latest-frame camera subscriber；
-- 最多八個 objects，point/box service、per-object masks、reset 與 dropped-frame count。
+- ROS 2 Jazzy latest-frame camera subscriber、通用 image-topic launch 與一鍵 RealSense launch；
+- 最多八個 objects，point/box service、per-object masks、reset、dropped-frame count
+  與逐幀 JSONL runtime trace。
 
 目前尚未接完的部分也必須先知道：
 
 - ROS node 尚未發布 `/sam/overlay` 或 `/segmented_image`；`enable_overlay`
   parameter 目前只是保留介面。
-- `/sam/result_json` 目前只有 input timestamp、object IDs 與累計
-  `dropped_frames`，沒有 preprocess/encoder/tail/end-to-end 分段 latency。
-- `sam2-trt benchmark` 可以彙整 runtime JSONL，但目前 ROS/C++ runtime 尚未產生
-  該格式。因此現階段可量 engine latency、ROS output FPS 與掉幀，尚不能從此
-  node 得到完整 camera-to-result latency breakdown。
+- `/sam/result_json` 與可選的 JSONL trace 已包含 queue、RGB/BGR conversion、整體
+  TensorRT inference、mask publish、pipeline、source-to-result latency、tracking FPS
+  與掉幀；尚未把整體 inference 再拆成 encoder/tail/postprocess。
+- `source_age_ms`/`end_to_end_ms` 只有在 camera message 提供非零且與 node 使用
+  同一 ROS clock 的 timestamp 時才會出現。
 - accuracy gate 工具已存在，但 TensorRT real-input report/NPZ 產生器仍需接上。
   未產生並通過該報告前，不得宣稱「不掉精度」。
 
@@ -552,6 +553,12 @@ ros2 interface show sam2_trt_msgs/srv/AddObject
 sam2_trt_ros sam2_trt_node
 ```
 
+安裝的 launch files 是：
+
+- `camera_stream.launch.py`：只啟動 TensorRT node，接已存在的任意
+  `sensor_msgs/Image` topic，適合 video publisher 或另外啟動的 camera driver；
+- `realsense.launch.py`：同時啟動 `realsense2_camera` color stream 與 TensorRT node。
+
 新 terminal 除了 source benchmark helper，還要加入 core library 與本 ROS
 workspace：
 
@@ -591,14 +598,16 @@ source scripts/source_thor_ros_env.sh
 export LD_LIBRARY_PATH="$SAM2_TRT_ROOT/build/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 source "$SAM2_TRT_ROOT/ros_ws/install/setup.bash"
 
-ros2 launch sam2_trt_ros realsense.launch.py \
+mkdir -p "$SAM2_TRT_ROOT/results/thor/video_smoke"
+ros2 launch sam2_trt_ros camera_stream.launch.py \
   bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-hiera-tiny/fp32" \
   precision:=fp32 \
-  image_topic:=/image
+  image_topic:=/image \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/video_smoke/runtime.jsonl"
 ```
 
-Launch filename 沿用 `realsense.launch.py`，但 `image_topic` 可以是任意 ROS
-`sensor_msgs/Image` topic。
+`camera_stream.launch.py` 不會啟動 camera driver；`image_topic` 可以是任意
+`sensor_msgs/Image` topic。Node 接受 `rgb8` 或 `bgr8`。
 
 Terminal C：先確認 node 正常收到 frames，再新增一個 point：
 
@@ -645,6 +654,24 @@ ros2 bag record \
 
 ## 10. RealSense camera 測試
 
+一般 smoke 可在同一個 terminal 一鍵啟動 camera 與 TensorRT node：
+
+```bash
+cd "$BENCH_ROOT"
+source scripts/source_thor_ros_env.sh
+export LD_LIBRARY_PATH="$SAM2_TRT_ROOT/build/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+source "$SAM2_TRT_ROOT/ros_ws/install/setup.bash"
+mkdir -p "$SAM2_TRT_ROOT/results/thor/realsense"
+
+ros2 launch sam2_trt_ros realsense.launch.py \
+  bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-hiera-tiny/fp32" \
+  precision:=fp32 \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/realsense/runtime.jsonl"
+```
+
+這個 launch 開啟 color、關閉 depth，使用 driver 自己選定的 color profile。若要
+指定或診斷 camera profile，則依下列兩-terminal 流程分開啟動。
+
 Terminal A 啟動 color stream：
 
 ```bash
@@ -683,10 +710,12 @@ source scripts/source_thor_ros_env.sh
 export LD_LIBRARY_PATH="$SAM2_TRT_ROOT/build/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 source "$SAM2_TRT_ROOT/ros_ws/install/setup.bash"
 
-ros2 launch sam2_trt_ros realsense.launch.py \
+mkdir -p "$SAM2_TRT_ROOT/results/thor/realsense"
+ros2 launch sam2_trt_ros camera_stream.launch.py \
   bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-hiera-tiny/fp32" \
   precision:=fp32 \
-  image_topic:=/camera/camera/color/image_raw
+  image_topic:=/camera/camera/color/image_raw \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/realsense/runtime.jsonl"
 ```
 
 Terminal C 加 prompt、看 mask rate 與掉幀：
@@ -703,11 +732,12 @@ ros2 topic echo /sam/result_json
 `/sam/result_json` 範例：
 
 ```json
-{"stamp_ns":123456789,"objects":[1,2],"dropped_frames":17}
+{"stamp_ns":123456789,"frame_index":42,"objects":[1,2],"queue_wait_ms":0.031,"color_convert_ms":0.481,"inference_ms":21.732,"mask_publish_ms":0.109,"callback_total_ms":22.368,"frame_interval_ms":33.333,"tracking_fps":30.000,"dropped":0,"dropped_frames":17,"source_age_ms":24.126,"end_to_end_ms":24.126}
 ```
 
 `dropped_frames` 是 latest-frame slot 被新 frame 覆寫的累計數。Camera FPS 高於
-inference FPS 時掉幀是預期行為；queue depth 1 的目的是避免追蹤舊畫面。
+inference FPS 時掉幀是預期行為；`dropped` 是自上一個已處理 frame 後新增的掉幀數。
+Queue depth 1 的目的是避免追蹤舊畫面。
 
 ## 11. ROS interfaces 與多物件行為
 
@@ -717,7 +747,7 @@ Topics：
 | --- | --- | --- |
 | `/segmentation_mask` | `sensor_msgs/Image` mono8 | 第一個 object 的 compatibility mask |
 | `/sam/object_masks` | `sensor_msgs/Image` mono8 | 每個 object 一則；ID 附在 `header.frame_id` |
-| `/sam/result_json` | `std_msgs/String` | input stamp、object IDs、累計 dropped frames |
+| `/sam/result_json` | `std_msgs/String` | input stamp、object IDs、runtime timings、FPS 與 dropped frames |
 
 Services：
 
@@ -735,7 +765,33 @@ service 加 object。
 
 ## 12. 效能記錄方式
 
-### 12.1 現階段可正式記錄
+### 12.1 ROS camera pipeline JSONL
+
+Launch 時傳入 `trace_path` 後，node 會將與 `/sam/result_json` 相同的每-frame
+JSON append 到該檔案。請為每次實驗使用新的檔名，避免 append 混入舊 run：
+
+```bash
+ros2 launch sam2_trt_ros camera_stream.launch.py \
+  bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-hiera-tiny/fp32" \
+  precision:=fp32 \
+  image_topic:=/image \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/run_001/runtime.jsonl"
+
+sam2-trt benchmark \
+  --trace "$SAM2_TRT_ROOT/results/thor/run_001/runtime.jsonl" \
+  --output "$SAM2_TRT_ROOT/results/thor/run_001/runtime_summary.json"
+```
+
+摘要包含存在於 trace 中的 `queue_wait_ms`、`color_convert_ms`、`inference_ms`、
+`mask_publish_ms`、`callback_total_ms`、`source_age_ms`、`end_to_end_ms`、
+`tracking_fps` 的 mean/p50/p90/p99，以及總 throughput 與 dropped frames。
+
+`inference_ms` 是 `Tracker::process_rgb8` 的完整 wall time，包含 CUDA/TensorRT
+執行及 runtime 為回傳 mask 所需的同步；它不是單獨 engine kernel time。
+`callback_total_ms` 從 ROS subscription 收到 frame 算到 result publish 前；
+`end_to_end_ms` 則使用 image header timestamp，因此只有 timestamp clock 正確時才可信。
+
+### 12.2 其他應一起記錄
 
 - `benchmark-engine` 的 mean/p50/p90/p99 與 object throughput；
 - camera publish FPS：`ros2 topic hz <image_topic>`；
@@ -751,20 +807,14 @@ tegrastats --interval 1000 | tee "$SAM2_TRT_ROOT/logs/thor/tegrastats.log"
 
 停止時用 `Ctrl-C`。
 
-### 12.2 目前不可由 ROS node 直接宣稱
+### 12.3 目前不可由 ROS node 直接宣稱
 
-- camera capture → result publish 的精確 end-to-end latency；
 - preprocess/encoder/tail/postprocess 分段 latency；
 - overlay/display FPS；
 - TensorRT-vs-PyTorch real-input mask parity。
 
-在 runtime timing JSONL 尚未接上前，不要手工建立虛假的欄位後餵給：
-
-```bash
-sam2-trt benchmark --trace results/runtime.jsonl --output results/runtime_summary.json
-```
-
-這個 command 只負責彙整已存在且包含對應 timing fields 的 JSONL。
+不要把 `inference_ms` 誤標成 encoder-only latency，也不要在 input timestamp 為零或
+不同 clock domain 時把缺少的 `end_to_end_ms` 補成猜測值。
 
 ## 13. 建議測試矩陣
 
@@ -903,4 +953,5 @@ profile 3 或 batch-8 track request，表示 Thor checkout/ROS install 不是最
 - [ ] RealSense masks、IDs、latest-frame dropped behavior 已確認。
 - [ ] FP32 real-input accuracy report 與 gate 通過。
 - [ ] Candidate precision 的 accuracy gate 通過後才比較/採用速度。
-- [ ] 完整 camera timing instrumentation 接上後才宣稱 end-to-end FPS/latency。
+- [ ] JSONL trace 已彙整，source timestamp clock 已確認後才宣稱 end-to-end latency。
+- [ ] 若需宣稱 encoder/tail/postprocess 分段，先補 core-level instrumentation。

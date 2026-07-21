@@ -28,8 +28,8 @@ TensorRT 11 cannot build the worst-case batch-8 memory-attention profile.
 - Exact SAM2.1 forward memory and object-pointer frame selection in Python and C++.
 - C++ CUDA preprocessing, TensorRT execution, memory packing, mask postprocessing, and
   online point/box tracking for up to eight objects.
-- ROS 2 latest-frame subscriber (queue depth 1), add/reset services, per-object masks,
-  compatibility mask topic, and result JSON.
+- ROS 2 latest-frame camera subscriber (queue depth 1), generic/RealSense launches,
+  add/reset services, per-object masks, compatibility mask topic, and JSONL runtime trace.
 - Accuracy gate: full SA-V J&F and image mIoU may each drop at most 0.1 percentage point;
   every saved frame/object binary mask must have IoU at least 0.999 against the FP32
   same-checkpoint PyTorch oracle.
