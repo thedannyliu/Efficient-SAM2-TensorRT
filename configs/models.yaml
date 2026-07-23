@@ -23,22 +23,25 @@ models:
   sam2.1-tinyvit-21m:
     encoder: tinyvit
     tinyvit_embed_dim: 384
+    encoder_exporter: legacy
     checkpoint_env: SAM2_TINYVIT_21M_CHECKPOINT
-    checkpoint_filename: tv21m_mse_cos.pt
+    checkpoint_filename: tv21.pt
     downstream: sam2.1-hiera-large
     downstream_checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
   sam2.1-tinyvit-11m:
     encoder: tinyvit
     tinyvit_embed_dim: 256
+    encoder_exporter: dynamo
     checkpoint_env: SAM2_TINYVIT_11M_CHECKPOINT
-    checkpoint_filename: tv11m_mse_cos.pt
+    checkpoint_filename: tv11.pt
     downstream: sam2.1-hiera-large
     downstream_checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
   sam2.1-tinyvit-5m:
     encoder: tinyvit
     tinyvit_embed_dim: 160
+    encoder_exporter: dynamo
     checkpoint_env: SAM2_TINYVIT_5M_CHECKPOINT
-    checkpoint_filename: tv5_proj_sam21l_msehr_cos025_best.pt
+    checkpoint_filename: tv5.pt
     downstream: sam2.1-hiera-large
     downstream_checkpoint_env: SAM2_HIERA_LARGE_CHECKPOINT
 

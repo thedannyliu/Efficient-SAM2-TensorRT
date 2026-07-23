@@ -17,6 +17,7 @@ class ModelSpec:
     downstream_checkpoint: Path
     config: str | None = None
     tinyvit_embed_dim: int | None = None
+    encoder_exporter: str = "dynamo"
 
 
 class RegistryError(ValueError):
@@ -86,6 +87,13 @@ def resolve_model(
         if not selected_downstream.is_file():
             raise RegistryError(f"downstream checkpoint does not exist: {selected_downstream}")
 
+    encoder_exporter = raw.get("encoder_exporter", "dynamo")
+    if encoder_exporter not in ("dynamo", "legacy"):
+        raise RegistryError(
+            f"unsupported encoder_exporter {encoder_exporter!r} for {model_id}; "
+            "choose 'dynamo' or 'legacy'"
+        )
+
     return ModelSpec(
         model_id=model_id,
         encoder=raw["encoder"],
@@ -94,4 +102,5 @@ def resolve_model(
         downstream_checkpoint=selected_downstream,
         config=raw.get("config"),
         tinyvit_embed_dim=raw.get("tinyvit_embed_dim"),
+        encoder_exporter=encoder_exporter,
     )

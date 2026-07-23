@@ -2,7 +2,12 @@ import unittest
 from enum import IntEnum
 from types import SimpleNamespace
 
-from sam2_trt.build import _network_flags, _profile_batches, _shape_for
+from sam2_trt.build import (
+    _network_flags,
+    _profile_batches,
+    _shape_for,
+    _validate_builder_options,
+)
 
 
 class TensorRtNetworkFlagsTest(unittest.TestCase):
@@ -28,6 +33,13 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
     def test_track_batch_eight_is_split_across_profiles(self):
         self.assertEqual(_profile_batches("track_step"), (1, 2, 4))
         self.assertEqual(_profile_batches("prompt_point_step"), (1, 2, 4, 8))
+
+    def test_builder_options_reject_invalid_values(self):
+        _validate_builder_options(5, 0)
+        with self.assertRaises(ValueError):
+            _validate_builder_options(6, 0)
+        with self.assertRaises(ValueError):
+            _validate_builder_options(5, -1)
 
 
 if __name__ == "__main__":

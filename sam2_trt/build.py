@@ -62,6 +62,13 @@ def _profile_batches(role: str) -> tuple[int, ...]:
     return (1, 2, 4, 8)
 
 
+def _validate_builder_options(builder_optimization_level: int, max_aux_streams: int) -> None:
+    if builder_optimization_level not in range(6):
+        raise ValueError("builder optimization level must be between 0 and 5")
+    if max_aux_streams < 0:
+        raise ValueError("max auxiliary streams must be non-negative")
+
+
 def build_engine(
     onnx_path: str | Path,
     engine_path: str | Path,
@@ -70,7 +77,10 @@ def build_engine(
     workspace_gib: float = 8.0,
     allow_tf32: bool = False,
     timing_cache: str | Path | None = None,
+    builder_optimization_level: int = 5,
+    max_aux_streams: int = 0,
 ) -> tuple[dict[str, list[int]], dict[str, list[int]]]:
+    _validate_builder_options(builder_optimization_level, max_aux_streams)
     import tensorrt as trt
 
     logger = trt.Logger(trt.Logger.INFO)
@@ -83,6 +93,8 @@ def build_engine(
 
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_gib * 2**30))
+    config.builder_optimization_level = builder_optimization_level
+    config.max_aux_streams = max_aux_streams
     if not allow_tf32 and hasattr(trt.BuilderFlag, "TF32"):
         config.clear_flag(trt.BuilderFlag.TF32)
 
@@ -136,7 +148,10 @@ def build_bundle(
     precision: str,
     workspace_gib: float = 8.0,
     allow_non_thor: bool = False,
+    builder_optimization_level: int = 5,
+    max_aux_streams: int = 0,
 ) -> Path:
+    _validate_builder_options(builder_optimization_level, max_aux_streams)
     require_thor(allow_non_thor)
     root = Path(bundle_dir).resolve()
     manifest_path = root / "manifest.json"
@@ -157,6 +172,8 @@ def build_bundle(
             workspace_gib=workspace_gib,
             allow_tf32=precision == "tf32",
             timing_cache=root / "timing.cache",
+            builder_optimization_level=builder_optimization_level,
+            max_aux_streams=max_aux_streams,
         )
         records.append(
             EngineRecord(
@@ -170,6 +187,8 @@ def build_bundle(
         )
     manifest.engines = records
     manifest.environment["tensorrt_device_model"] = device_model()
+    manifest.environment["builder_optimization_level"] = builder_optimization_level
+    manifest.environment["max_aux_streams"] = max_aux_streams
     try:
         import tensorrt as trt
 
@@ -178,7 +197,16 @@ def build_bundle(
         pass
     manifest.write(manifest_path)
     (root / "build.json").write_text(
-        json.dumps({"precision": precision, "engines": [record.filename for record in records]}, indent=2) + "\n",
+        json.dumps(
+            {
+                "precision": precision,
+                "builder_optimization_level": builder_optimization_level,
+                "max_aux_streams": max_aux_streams,
+                "engines": [record.filename for record in records],
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return root

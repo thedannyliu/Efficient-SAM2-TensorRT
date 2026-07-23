@@ -246,21 +246,33 @@ def _dynamic_input_shapes(torch, input_names, dynamic_axes):
     return tuple(shapes)
 
 
-def _export_one(torch, module, inputs, output: Path, input_names, output_names, dynamic_axes):
+def _export_one(
+    torch,
+    module,
+    inputs,
+    output: Path,
+    input_names,
+    output_names,
+    dynamic_axes,
+    *,
+    exporter: str = "dynamo",
+):
     output.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
-        module,
-        inputs,
-        os.fspath(output),
-        input_names=input_names,
-        output_names=output_names,
-        opset_version=18,
-        dynamo=True,
-        dynamic_shapes=_dynamic_input_shapes(torch, input_names, dynamic_axes),
-        external_data=False,
-        verify=False,
-    )
-    rewrite_dynamic_batch_resize(output)
+    options = {
+        "input_names": input_names,
+        "output_names": output_names,
+        "opset_version": 18,
+        "dynamo": exporter == "dynamo",
+        "external_data": False,
+    }
+    if exporter == "dynamo":
+        options["dynamic_shapes"] = _dynamic_input_shapes(torch, input_names, dynamic_axes)
+        options["verify"] = False
+    else:
+        options["dynamic_axes"] = dynamic_axes or None
+    torch.onnx.export(module, inputs, os.fspath(output), **options)
+    if exporter == "dynamo":
+        rewrite_dynamic_batch_resize(output)
 
 
 def export_bundle(
@@ -319,6 +331,7 @@ def export_bundle(
             ["image"],
             ["high_res_s0", "high_res_s1", "image_embedding", "image_position"],
             {},
+            exporter=spec.encoder_exporter,
         )
 
         export_batch = 2
@@ -407,7 +420,15 @@ def export_bundle(
     manifest.write(output / "manifest.json")
     (output / "export.json").write_text(
         json.dumps(
-            {"graphs": ["encoder.onnx", "prompt_point_step.onnx", "prompt_box_step.onnx", "track_step.onnx"]},
+            {
+                "graphs": [
+                    "encoder.onnx",
+                    "prompt_point_step.onnx",
+                    "prompt_box_step.onnx",
+                    "track_step.onnx",
+                ],
+                "encoder_exporter": spec.encoder_exporter,
+            },
             indent=2,
         ) + "\n",
         encoding="utf-8",

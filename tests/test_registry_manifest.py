@@ -22,6 +22,7 @@ class RegistryManifestTest(unittest.TestCase):
             spec = resolve_model("test", registry_path=registry, environ={"TEST_CKPT": str(checkpoint)})
             self.assertEqual(spec.checkpoint, checkpoint)
             self.assertEqual(spec.downstream_checkpoint, checkpoint)
+            self.assertEqual(spec.encoder_exporter, "dynamo")
 
             manifest = BundleManifest.create(
                 model_id="test", checkpoint=checkpoint, downstream="test", source_revisions={"sam2": "abc"}
@@ -35,6 +36,21 @@ class RegistryManifestTest(unittest.TestCase):
     def test_missing_checkpoint_is_not_guessed(self):
         with self.assertRaises(RegistryError):
             resolve_model("sam2.1-tinyvit-21m", environ={})
+
+    def test_resolves_configured_legacy_encoder_exporter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "model.pt"
+            checkpoint.write_bytes(b"checkpoint")
+            registry = root / "models.yaml"
+            registry.write_text(
+                "schema_version: 1\nmodels:\n  test:\n    encoder: tinyvit\n"
+                "    checkpoint_env: TEST_CKPT\n    downstream: test\n"
+                "    encoder_exporter: legacy\n",
+                encoding="utf-8",
+            )
+            spec = resolve_model("test", registry_path=registry, environ={"TEST_CKPT": str(checkpoint)})
+            self.assertEqual(spec.encoder_exporter, "legacy")
 
 
 if __name__ == "__main__":
