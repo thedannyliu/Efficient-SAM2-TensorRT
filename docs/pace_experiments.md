@@ -1,6 +1,6 @@
 # PACE TensorRT Experiment Log
 
-Last updated: 2026-07-20
+Last updated: 2026-07-23
 
 ## Goal and acceptance criteria
 
@@ -170,3 +170,53 @@ With the first matching performance check complete:
 4. On Thor, measure `camera -> preprocess -> encoder -> tail -> mask -> publish`
    with queue depth 1, pinned input buffers, one non-blocking CUDA stream, and no
    avoidable host/device copies.
+
+## TinyViT precision and pipeline exploration
+
+The later L40S exploration used the three distilled SAM2.1-L encoders at
+`checkpoints/distill/tv5.pt`, `tv11.pt`, and `tv21.pt`. Their SHA256 values are:
+
+| Checkpoint | SHA256 |
+| --- | --- |
+| `tv5.pt` | `cd442f19b67be084305ead07908a21a911d25c3980f5f67e4b568db4d88878cf` |
+| `tv11.pt` | `62a467bf915f4cf6b3c142743b55d0d4564d09658ee52896a69bcbc0fe5c77ab` |
+| `tv21.pt` | `da3a192cfd66aab4ed75fc9c3f804c84e3488540a905728ec2f319f5ab7a29fe` |
+
+The selected encoder configuration for all three is FP16. Per-layer overrides did
+not produce a better verified tradeoff:
+
+| Candidate | L40S latency | Mask/result finding | Decision |
+| --- | ---: | --- | --- |
+| All FP16 | 1.2379 ms in the layer sweep | Reference candidate | Select |
+| Output projections FP32 | 1.4134 ms | Negligible error improvement | Reject |
+| All convolutions FP32 | 2.8488 ms | Too slow | Reject |
+| FP8 convolution + MatMul | 1.1974 ms | Mean mask IoU 0.5335 | Reject |
+| All MatMul FP8 | Slower than FP16 | Mean mask IoU 0.7558 | Reject |
+| Attention-score FP8 | Not selected | Mean mask IoU 0.93489 | Reject under 0.95 target |
+| INT4 | 1.3289 ms | Poor cosine/L2 agreement | Reject |
+
+The 21M Dynamo encoder export expanded six attention-bias caches and created an
+unnecessarily large graph. The compact legacy exporter preserved the fixed batch-1
+encoder and matched runtime, so the production registry uses legacy export for 21M
+and Dynamo for 5M/11M. Dynamic point/box/track graphs remain Dynamo exports.
+
+Formal same-L40S job `11405814` measured the TinyViT-5M FP16 zero-aux path:
+
+| Measurement | Baseline | Optimized | Speedup |
+| --- | ---: | ---: | ---: |
+| Model path vs original TensorRT | 13.074 ms | 4.402 ms | 2.97x |
+| Model path vs PyTorch | 18.974 ms | 4.402 ms | 4.31x |
+| Decode + point vs original TensorRT | 21.553 ms | 12.963 ms | 1.66x |
+| Decode + point vs PyTorch | 27.451 ms | 12.963 ms | 2.12x |
+| Sequential stream | 32.9 FPS | 88.9 FPS | 2.70x |
+| Threaded optimized stream | 32.9 FPS | 129.1 FPS | 3.92x |
+
+Mean binary-mask IoU against the PyTorch proxy was `0.979536`; minimum frame IoU
+was `0.832941`. This is useful for selecting engineering candidates but is not a
+dataset ground-truth accuracy result and does not satisfy this repo's strict
+per-frame `0.999` acceptance gate.
+
+TensorRT builder optimization level 5 and zero auxiliary streams were best on the
+tested L40S. A100 favored one auxiliary stream slightly. Because engines and tactic
+selection are hardware-specific, Thor must rebuild and compare auxiliary-stream
+limits 0/1/2 under one fixed power mode and camera workload before promotion.

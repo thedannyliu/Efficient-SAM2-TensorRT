@@ -37,6 +37,13 @@ TensorRT 11 cannot build the worst-case batch-8 memory-attention profile.
 TensorRT plans are intentionally not included. All four plans must be built from the exact
 checkpoint on the target Thor.
 
+## Clone
+
+```bash
+git clone git@github.com:thedannyliu/Efficient-SAM2-TensorRT.git
+cd Efficient-SAM2-TensorRT
+```
+
 ## Local logic checks
 
 ```bash
@@ -64,7 +71,7 @@ Set checkpoint paths explicitly. TinyViT also needs the SAM2.1-L downstream chec
 
 ```bash
 export SAM2_HIERA_LARGE_CHECKPOINT=/data/checkpoints/sam2.1_hiera_large.pt
-export SAM2_TINYVIT_21M_CHECKPOINT=/data/checkpoints/tv21m_mse_cos.pt
+export SAM2_TINYVIT_21M_CHECKPOINT=/data/checkpoints/distill/tv21.pt
 ```
 
 Export and build an accuracy-first FP32 bundle:
@@ -78,7 +85,9 @@ sam2-trt export \
 
 sam2-trt build \
   --bundle-dir bundles/sam2.1-hiera-large/fp32 \
-  --precision fp32
+  --precision fp32 \
+  --builder-optimization-level 5 \
+  --max-aux-streams 0
 ```
 
 For TinyViT, reuse the matching dtype's SAM2.1-L downstream graphs:
@@ -91,13 +100,24 @@ sam2-trt export \
   --reuse-downstream-dir bundles/sam2.1-hiera-large/fp32 \
   --output-dir bundles/sam2.1-tinyvit-21m/fp32 \
   --dtype fp32
-sam2-trt build --bundle-dir bundles/sam2.1-tinyvit-21m/fp32 --precision fp32
+sam2-trt build \
+  --bundle-dir bundles/sam2.1-tinyvit-21m/fp32 \
+  --precision fp32 \
+  --builder-optimization-level 5 \
+  --max-aux-streams 0
 ```
 
 Repeat export/build for `tf32` (FP32 graph), `fp16`, and `bf16`. Start from no-TF32 FP32,
 then choose the fastest candidate that passes the accuracy gate. Mixed precision and
 FP8/INT8 are deliberately not auto-enabled: only introduce layer-level precision
 changes after Thor profiling and real-input calibration, then run the same gate.
+
+PACE exploration selected Dynamo export for TinyViT 5M/11M, legacy ONNX export for the
+21M encoder, and all-FP16 encoder layers. The legacy 21M choice avoids Dynamo expanding
+attention-bias caches into an unnecessarily large graph. Builder level 5 and zero
+auxiliary streams are the L40S starting point, not a portable performance claim:
+rebuild on Thor and compare `--max-aux-streams 0`, `1`, and `2` with the same bundle,
+inputs, power mode, and accuracy gate.
 
 See [docs/thor_testing_guide.md](docs/thor_testing_guide.md) for the complete Thor
 environment, path layout, engine build, ROS video/RealSense smoke tests, measurements,

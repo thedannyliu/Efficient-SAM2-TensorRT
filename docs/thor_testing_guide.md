@@ -54,11 +54,11 @@ environment/import probe
   external/sam2/
   external/SAM2-Distillation-Pipeline/
   checkpoints/sam2/
-  checkpoints/sam2_distill/stage1/
+  checkpoints/distill/
   videos/test1.mov
   videos/test2.mov
 
-~/SAM2-TensorRT-Thor/                      # 本 repo
+~/Efficient-SAM2-TensorRT/                 # 本 repo
   bundles/                                 # ONNX + Thor-specific engines；不進 Git
   results/                                 # benchmark/accuracy outputs；不進 Git
   logs/                                    # local logs；不進 Git
@@ -73,7 +73,7 @@ environment/import probe
 
 ```bash
 export BENCH_ROOT="$HOME/EfficientSAM3-Benchmark"
-export SAM2_TRT_ROOT="$HOME/SAM2-TensorRT-Thor"
+export SAM2_TRT_ROOT="$HOME/Efficient-SAM2-TensorRT"
 export THOR_VENV="$HOME/venvs/effisam3_venv_ros"
 export THOR_ROS_SETUP=/opt/ros/jazzy/setup.bash
 export SAM3_SOURCE="$HOME/efficientsam3/sam3"
@@ -81,9 +81,13 @@ export SAM3_SOURCE="$HOME/efficientsam3/sam3"
 
 如果路徑不同，只改這些 variables。不要把 PACE 絕對路徑寫進 Thor bundle。
 
-本 repo 目前沒有設定可假設的 Git remote。請先把 code push 到可存取的 remote
-再 clone，或從開發機將 checkout 複製到 `~/SAM2-TensorRT-Thor`。不要複製 PACE
-建立的 `.engine`；TensorRT plans 必須在目標 Thor 上重建。
+在 Thor clone 本 repo。不要複製 PACE 建立的 `.engine`；TensorRT plans 必須在
+目標 Thor 上重建：
+
+```bash
+git clone git@github.com:thedannyliu/Efficient-SAM2-TensorRT.git \
+  "$HOME/Efficient-SAM2-TensorRT"
+```
 
 ## 2. 一次性系統與 Python environment setup
 
@@ -165,7 +169,7 @@ python -m pip install -e . --no-deps
 
 ```bash
 export BENCH_ROOT="$HOME/EfficientSAM3-Benchmark"
-export SAM2_TRT_ROOT="$HOME/SAM2-TensorRT-Thor"
+export SAM2_TRT_ROOT="$HOME/Efficient-SAM2-TensorRT"
 export THOR_VENV="$HOME/venvs/effisam3_venv_ros"
 export THOR_ROS_SETUP=/opt/ros/jazzy/setup.bash
 export SAM3_SOURCE="$HOME/efficientsam3/sam3"
@@ -270,9 +274,9 @@ python -m pip install -e external/SAM2-Distillation-Pipeline --no-deps
 | `sam2.1-hiera-small` | `checkpoints/sam2/sam2.1_hiera_small.pt` | same |
 | `sam2.1-hiera-base-plus` | `checkpoints/sam2/sam2.1_hiera_base_plus.pt` | same |
 | `sam2.1-hiera-large` | `checkpoints/sam2/sam2.1_hiera_large.pt` | same |
-| `sam2.1-tinyvit-21m` | `checkpoints/sam2_distill/stage1/tv21m_mse_cos.pt` | SAM2.1-L |
-| `sam2.1-tinyvit-11m` | `checkpoints/sam2_distill/stage1/tv11m_mse_cos.pt` | SAM2.1-L |
-| `sam2.1-tinyvit-5m` | `checkpoints/sam2_distill/stage1/tv5_proj_sam21l_msehr_cos025_best.pt` | SAM2.1-L |
+| `sam2.1-tinyvit-21m` | `checkpoints/distill/tv21.pt` | SAM2.1-L |
+| `sam2.1-tinyvit-11m` | `checkpoints/distill/tv11.pt` | SAM2.1-L |
+| `sam2.1-tinyvit-5m` | `checkpoints/distill/tv5.pt` | SAM2.1-L |
 
 設定明確的 absolute paths：
 
@@ -281,9 +285,9 @@ export SAM2_HIERA_TINY_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2/sam2.1_hiera_tin
 export SAM2_HIERA_SMALL_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2/sam2.1_hiera_small.pt"
 export SAM2_HIERA_BASE_PLUS_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2/sam2.1_hiera_base_plus.pt"
 export SAM2_HIERA_LARGE_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2/sam2.1_hiera_large.pt"
-export SAM2_TINYVIT_21M_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2_distill/stage1/tv21m_mse_cos.pt"
-export SAM2_TINYVIT_11M_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2_distill/stage1/tv11m_mse_cos.pt"
-export SAM2_TINYVIT_5M_CHECKPOINT="$BENCH_ROOT/checkpoints/sam2_distill/stage1/tv5_proj_sam21l_msehr_cos025_best.pt"
+export SAM2_TINYVIT_21M_CHECKPOINT="$BENCH_ROOT/checkpoints/distill/tv21.pt"
+export SAM2_TINYVIT_11M_CHECKPOINT="$BENCH_ROOT/checkpoints/distill/tv11.pt"
+export SAM2_TINYVIT_5M_CHECKPOINT="$BENCH_ROOT/checkpoints/distill/tv5.pt"
 
 for checkpoint in \
   "$SAM2_HIERA_TINY_CHECKPOINT" \
@@ -325,7 +329,9 @@ sam2-trt export \
 sam2-trt build \
   --bundle-dir bundles/sam2.1-hiera-tiny/fp32 \
   --precision fp32 \
-  --workspace-gib 8
+  --workspace-gib 8 \
+  --builder-optimization-level 5 \
+  --max-aux-streams 0
 
 sam2-trt verify-bundle \
   --bundle-dir bundles/sam2.1-hiera-tiny/fp32
@@ -402,12 +408,23 @@ sam2-trt export \
 
 sam2-trt build \
   --bundle-dir bundles/sam2.1-tinyvit-21m/fp32 \
-  --precision fp32
+  --precision fp32 \
+  --builder-optimization-level 5 \
+  --max-aux-streams 0
 ```
 
 11M/5M 只需替換 `--model-id` 與 output directory。TinyViT model 仍使用
 SAM2.1-L 的 prompt/mask/memory modules，因此必須設定
 `SAM2_HIERA_LARGE_CHECKPOINT`。
+
+Registry 會讓 5M/11M encoder 使用 Dynamo exporter，21M encoder 使用 legacy
+exporter；這是 PACE 上避免 21M attention-bias cache 被展開成大型 ONNX graph 的
+結果。四張 TensorRT plans 仍一律在 Thor 建立。
+
+`--builder-optimization-level 5 --max-aux-streams 0` 是 L40S 的起始設定。完成
+accuracy gate 後，另建三個乾淨 bundle，分別使用 `--max-aux-streams 0`、`1`、
+`2` 比較；不要在同一 bundle 反覆 build，否則 manifest 與 timing cache 不容易
+追溯。Thor 的勝者以完整 camera pipeline latency 為準。
 
 只有在 distilled checkpoint 不含 `task_model_state`、且確認 downstream weights
 就是相同 dtype 的 base SAM2.1-L 時，才使用 `--reuse-downstream-dir`。Exporter
@@ -847,7 +864,7 @@ FP32/no-TF32 correctness
 date/time
 Thor hostname and device model
 JetPack/L4T, CUDA, TensorRT, PyTorch, ROS versions
-SAM2-TensorRT-Thor commit
+Efficient-SAM2-TensorRT commit
 SAM2 and distillation source commits
 model ID
 encoder and downstream checkpoint paths + SHA256
