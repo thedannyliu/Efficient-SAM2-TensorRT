@@ -411,3 +411,116 @@ passes the accuracy threshold.
 
 Physical-camera acceptance is performed with the TensorRT C++/ROS node, not
 the existing PyTorch `sam2_online_tracking_node`.
+
+## 60 FPS RealSense capacity benchmark
+
+The D455F connected to Thor does not support 60 FPS at 1280x720. The highest
+available 60 FPS color profile is `848x480x60`; the driver confirmed USB 3.2
+and opened that exact RGB8 profile. With no tracked objects the composed
+camera/tracker process received 59.656 FPS, with a 16.766 ms mean frame
+interval and zero dropped frames. This is the preferred capacity test because
+the earlier 30 FPS profile hid any tracker capacity above 30 FPS.
+
+The following runs use TV5M FP16, the same camera scene and prompts,
+`track_concurrency=8`, intra-process RealSense delivery, latest-only input,
+and the asynchronous 640x360 preview. `inference_ms` is the complete C++
+tracker wall time, not only the TensorRT plan time.
+
+Persistent engine-output buffers and token-major state storage reduced the
+synchronous path by 0.5--1.1%. This is a valid exact-output optimization, but
+it also establishes that allocation and state transposition are no longer the
+dominant multi-object cost.
+
+| Objects | Synchronous inference (ms) | Synchronous FPS | Source age (ms) |
+| ---: | ---: | ---: | ---: |
+| 1 | 32.352 | 30.755 | 56.497 |
+| 2 | 51.450 | 19.381 | 75.316 |
+| 4 | 92.284 | 10.847 | 116.176 |
+| 8 | 178.982 | 5.589 | 203.131 |
+
+The concurrency sweep for eight objects rejected limiting execution to fewer
+streams:
+
+| `track_concurrency` | Inference (ms) | FPS |
+| ---: | ---: | ---: |
+| 1 | 205.654 | 4.862 |
+| 2 | 183.874 | 5.433 |
+| 4 | 180.621 | 5.534 |
+| 8 | 179.859 | 5.555 |
+
+Eight concurrent batch-1 contexts are therefore retained. They improve the
+eight-object result by 12.5% over serial execution, although the gain is much
+smaller than ideal scaling because the track graphs contend for the same GPU
+compute and memory bandwidth.
+
+## Cross-frame encoder/tracker overlap
+
+Commit `1472b5c` adds a double-buffered pipeline. While the object-dependent
+track step consumes frame `N`, the shared TinyViT encoder computes frame
+`N+1`. The result and preview retain frame `N`'s original ROS timestamp, so
+masks are not drawn on the wrong image. No model operation, weight, dtype,
+threshold, or state-selection rule changes.
+
+| Objects | Overlap inference (ms) | Overlap FPS | Latency reduction | FPS gain | Source age (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 27.080 | 36.752 | 16.3% | 19.5% | 78.361 |
+| 2 | 46.733 | 21.326 | 9.2% | 10.0% | 117.573 |
+| 4 | 87.822 | 11.389 | 4.8% | 5.0% | 199.399 |
+| 8 | 171.230 | 5.841 | 4.3% | 4.5% | 367.472 |
+
+This is a throughput/latency tradeoff rather than a universal default. It
+reduces the time between completed results, but a result is emitted one
+processed frame later. At one object that is a useful 5.27 ms model-path
+reduction for about 21.9 ms additional source age. At eight objects, the
+fixed one-processed-frame delay is about 171 ms, so latency-sensitive robotics
+should set `pipeline_overlap:=false` even though maximum-throughput tests use
+`true`.
+
+Trace directories on Thor are ignored and remain local:
+
+```text
+results/thor/tv5_60fps_baseline/
+results/thor/tv5_60fps_concurrency{1,2,4}/
+results/thor/tv5_60fps_reuse_v1/
+results/thor/tv5_60fps_pipeline_v1/
+```
+
+## SAM 3.1 Object Multiplex applicability
+
+The official SAM 3.1 release and source were reviewed at upstream commit
+`46957e47805eaa273f4aa7bbbd25a88bca9108ce`. Object Multiplex is not only a
+runtime batching policy. The released model adds learned components:
+
+- a fixed-capacity multiplex controller, normally 16 objects per bucket;
+- a `MultiplexMaskDecoder` with per-slot learned mask, IoU, and object-score
+  tokens;
+- a multiplex memory encoder whose mask input has per-object channels;
+- 256-channel decoupled memory attention and a tri-head vision neck;
+- a separate `sam3.1_multiplex.pt` checkpoint.
+
+Meta reports up to 16 objects in one forward pass and about 7x speedup at 128
+objects on one H100 relative to the original SAM 3 implementation:
+
+- https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md
+- https://ai.meta.com/blog/segment-anything-model-3/
+
+Using the released SAM 3.1 checkpoint for inference is training-free for a
+deployment dataset: no user fine-tuning is required. Transplanting its
+multiplex decoder into this SAM2 TinyViT pipeline is **not** training-free.
+The present SAM2 track graph uses 64-channel memory, 1024 input resolution,
+SAM2 decoder weights, and independent object states. SAM 3.1 uses incompatible
+feature, memory, decoder-token, and checkpoint contracts.
+
+The no-training subset of the idea is already represented here: one shared
+image encode, fixed object slots, persistent state/output buffers, parallel
+batch-1 contexts, batched preview work, and reduced CPU/GPU synchronization.
+Achieving true joint-object reasoning requires a separate trained downstream
+model. The proposed research branch is:
+
+1. benchmark the official SAM 3.1 checkpoint on PACE H100 for
+   1/2/4/8/16-object propagation;
+2. export a fixed 16-slot propagation graph and audit ONNX/TensorRT support;
+3. keep the TinyViT encoder frozen, add a compatible tri-neck/256-channel
+   memory adapter, and distill the SAM 3.1 multiplex downstream path;
+4. promote it only if video J&F and per-frame/object mask agreement remain at
+   least 0.95 and Thor improves both throughput and memory use.

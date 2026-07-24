@@ -803,6 +803,32 @@ ros2 launch sam2_trt_ros interactive_realsense.launch.py \
   trace_path:="$SAM2_TRT_ROOT/results/thor/tv5_interactive_001/runtime.jsonl"
 ```
 
+要量模型的實際 capacity，使用 D455F 支援的最高解析度 60 FPS profile：
+
+```bash
+ros2 launch sam2_trt_ros interactive_realsense.launch.py \
+  bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-tinyvit-5m/fp16_aux0" \
+  precision:=fp16 \
+  color_profile:=848x480x60 \
+  track_concurrency:=8 \
+  pipeline_overlap:=true \
+  replace_on_prompt:=false \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/tv5_60fps/runtime.jsonl"
+```
+
+不要使用 `1280x720x60` 或 `960x540x60`；這台 D455F 不支援，driver 會退回
+`1280x720x30`。啟動後應在 log 看到：
+
+```text
+Open profile: stream_type: Color(0), Format: RGB8, Width: 848, Height: 480, FPS: 60
+Device USB type: 3.2
+```
+
+`pipeline_overlap:=true` 會在追蹤 frame N 時同時 encode frame N+1，最大化
+throughput。JSONL 會記錄 `"pipeline_overlap":true` 與
+`"pipeline_delay_frames":1`。它不改變 mask 計算，但固定增加一個 processed
+frame 的 source-age；需要最低即時延遲時使用 `pipeline_overlap:=false`。
+
 從 SSH 啟動到 Thor 的既有桌面時，另外設定該桌面的 `DISPLAY`、
 `XDG_RUNTIME_DIR` 與 `DBUS_SESSION_BUS_ADDRESS`。`q` 只關閉 viewer；
 在 launch terminal 按 `Ctrl+C` 才會一起停止 camera 與 tracker。預設每個新
