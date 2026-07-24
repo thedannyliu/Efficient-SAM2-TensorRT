@@ -155,6 +155,7 @@ def compare_prompt_masks(
         reference_masks = {}
         candidate_masks = {}
         scores = {}
+        quality_scores = {}
         for video_value in videos:
             video = Path(video_value).resolve()
             for frame_index in frame_indices:
@@ -167,9 +168,10 @@ def compare_prompt_masks(
                 ).reshape(1, -1)
 
                 reference_features = encoder_module(image)
-                reference = prompt_module(
+                reference_outputs = prompt_module(
                     *reference_features[:3], coords, point_labels
-                )[0]
+                )
+                reference = reference_outputs[0]
 
                 candidate_image = image.to(
                     dtype=encoder_engine.input_dtype("image")
@@ -184,7 +186,8 @@ def compare_prompt_masks(
                     ).contiguous(),
                     "point_labels": point_labels,
                 }
-                candidate = prompt_engine.run(candidate_inputs)["mask_logits"]
+                candidate_outputs = prompt_engine.run(candidate_inputs)
+                candidate = candidate_outputs["mask_logits"]
                 torch.cuda.synchronize()
 
                 key = f"{video.stem}_frame_{frame_index:06d}"
@@ -193,6 +196,14 @@ def compare_prompt_masks(
                 reference_masks[key] = reference_mask
                 candidate_masks[key] = candidate_mask
                 scores[key] = binary_iou(reference_mask, candidate_mask)
+                reference_iou = reference_outputs[1][0].float().cpu().tolist()
+                candidate_iou = candidate_outputs["iou"][0].float().cpu().tolist()
+                quality_scores[key] = {
+                    "pytorch": reference_iou,
+                    "pytorch_argmax": int(np.argmax(reference_iou)),
+                    "tensorrt": candidate_iou,
+                    "tensorrt_argmax": int(np.argmax(candidate_iou)),
+                }
 
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -213,6 +224,7 @@ def compare_prompt_masks(
             "per_frame": scores,
         },
         "samples": len(scores),
+        "quality_scores": quality_scores,
         "reference_masks": "pytorch_masks.npz",
         "candidate_masks": "tensorrt_masks.npz",
     }
