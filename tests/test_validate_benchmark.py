@@ -44,6 +44,7 @@ class ValidateBenchmarkTest(unittest.TestCase):
                     "end_to_end_ms": 10,
                     "inference_ms": 6,
                     "callback_total_ms": 10,
+                    "worker_total_ms": 8,
                     "queue_wait_ms": 1,
                     "frame_interval_ms": 0,
                     "dropped": 0,
@@ -52,6 +53,7 @@ class ValidateBenchmarkTest(unittest.TestCase):
                     "end_to_end_ms": 20,
                     "inference_ms": 8,
                     "callback_total_ms": 20,
+                    "worker_total_ms": 12,
                     "queue_wait_ms": 2,
                     "frame_interval_ms": 20,
                     "dropped": 1,
@@ -65,7 +67,7 @@ class ValidateBenchmarkTest(unittest.TestCase):
             self.assertEqual(summary["interval_count"], 1)
             self.assertEqual(summary["throughput_fps"], 50.0)
             self.assertAlmostEqual(
-                summary["processing_capacity_fps_from_mean_latency"], 1000.0 / 15.0
+                summary["processing_capacity_fps_from_mean_latency"], 1000.0 / 10.0
             )
             self.assertEqual(summary["inference_ms"]["mean"], 7.0)
             self.assertEqual(summary["queue_wait_ms"]["p50"], 1.5)

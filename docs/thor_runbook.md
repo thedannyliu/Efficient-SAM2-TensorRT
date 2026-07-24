@@ -130,7 +130,8 @@ dropped-frame timings. Summarize with:
 sam2-trt benchmark --trace results/runtime.jsonl --output results/runtime_summary.json
 ```
 
-`processing_capacity_fps` is the reciprocal of per-frame callback latency, while
+`processing_capacity_fps` is the reciprocal of per-frame `worker_total_ms`
+(processing after dequeue, excluding `queue_wait_ms`), while
 `processed_fps` is the observed interval between processed frames. They are expected to
 differ when camera/USB delivery is slower or irregular. Use summary `throughput_fps`
 (`interval_count / measurement_duration_s`) for the measured run FPS; do not average

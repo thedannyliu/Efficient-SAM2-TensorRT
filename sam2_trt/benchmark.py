@@ -21,6 +21,7 @@ def summarize_trace(path: str | Path) -> dict[str, object]:
         "inference_ms",
         "mask_publish_ms",
         "callback_total_ms",
+        "worker_total_ms",
         "source_age_ms",
         "end_to_end_ms",
         "processing_capacity_fps",
@@ -42,8 +43,10 @@ def summarize_trace(path: str | Path) -> dict[str, object]:
     summary["measurement_duration_s"] = duration
     summary["interval_count"] = len(intervals)
     summary["throughput_fps"] = len(intervals) / duration if duration > 0 else None
-    callback = summary.get("callback_total_ms")
+    worker = summary.get("worker_total_ms")
+    if worker is None:
+        worker = summary.get("callback_total_ms")
     summary["processing_capacity_fps_from_mean_latency"] = (
-        1000.0 / callback["mean"] if callback and callback["mean"] > 0 else None
+        1000.0 / worker["mean"] if worker and worker["mean"] > 0 else None
     )
     return summary
