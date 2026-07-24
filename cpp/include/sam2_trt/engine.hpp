@@ -38,6 +38,9 @@ class Engine {
 
   std::map<std::string, DeviceTensor> run(
       const std::map<std::string, DeviceTensor>& inputs, int profile, cudaStream_t stream);
+  void run_into(
+      const std::map<std::string, DeviceTensor>& inputs, int profile,
+      cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs);
   nvinfer1::DataType tensor_dtype(const std::string& name) const;
 
  private:

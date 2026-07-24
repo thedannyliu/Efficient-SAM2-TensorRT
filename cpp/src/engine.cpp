@@ -113,6 +113,14 @@ static std::vector<int64_t> from_dims(const nvinfer1::Dims& dims) {
 
 std::map<std::string, DeviceTensor> Engine::run(
     const std::map<std::string, DeviceTensor>& inputs, int profile, cudaStream_t stream) {
+  std::map<std::string, DeviceTensor> outputs;
+  run_into(inputs, profile, stream, outputs);
+  return outputs;
+}
+
+void Engine::run_into(
+    const std::map<std::string, DeviceTensor>& inputs, int profile,
+    cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs) {
   if (profile < 0 || profile >= static_cast<int>(contexts_.size()))
     throw std::out_of_range("invalid TensorRT optimization profile");
   auto* context = contexts_[profile];
@@ -131,21 +139,22 @@ std::map<std::string, DeviceTensor> Engine::run(
   }
   if (!context->allInputDimensionsSpecified()) throw std::invalid_argument("not all input dimensions are specified");
 
-  std::map<std::string, DeviceTensor> outputs;
   for (int index = 0; index < engine_->getNbIOTensors(); ++index) {
     const char* raw_name = engine_->getIOTensorName(index);
     if (engine_->getTensorIOMode(raw_name) != nvinfer1::TensorIOMode::kOUTPUT) continue;
     std::string name(raw_name);
-    auto tensor = allocate_tensor(
-        from_dims(context->getTensorShape(raw_name)),
-        engine_->getTensorDataType(raw_name),
-        stream);
-    if (!context->setTensorAddress(raw_name, tensor.data))
+    const auto shape = from_dims(context->getTensorShape(raw_name));
+    const auto dtype = engine_->getTensorDataType(raw_name);
+    auto existing = outputs.find(name);
+    if (existing == outputs.end() || existing->second.shape != shape ||
+        existing->second.dtype != dtype) {
+      outputs[name] = allocate_tensor(shape, dtype, stream);
+      existing = outputs.find(name);
+    }
+    if (!context->setTensorAddress(raw_name, existing->second.data))
       throw std::runtime_error("setTensorAddress failed: " + name);
-    outputs.emplace(std::move(name), std::move(tensor));
   }
   if (!context->enqueueV3(stream)) throw std::runtime_error("TensorRT enqueueV3 failed");
-  return outputs;
 }
 
 }  // namespace sam2_trt
