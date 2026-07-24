@@ -30,6 +30,7 @@ DeviceTensor slice_batch(const DeviceTensor& tensor, int index) {
 }
 
 DeviceTensor repeat_batch(const DeviceTensor& source, int batch, cudaStream_t stream) {
+  if (!source.shape.empty() && source.shape.front() == batch) return source;
   auto shape = source.shape;
   shape[0] = batch;
   auto output = allocate_tensor(shape, source.dtype);
@@ -204,6 +205,8 @@ struct Tracker::Impl {
       const auto& selected = selections[source_row];
       for (int index = 0; index < memories; ++index) {
         const auto& item = selected.memories[index];
+        if (item.value->memory.dtype != dtype || item.value->memory_position.dtype != dtype)
+          throw std::invalid_argument("memory dtype does not match track engine");
         temporal[index * batch + row] = item.position;
         launch_nchw_to_memory_bank(item.value->memory.data, memory.data, dtype, index, row,
                                    memories, batch, 64, 64, 64, stream);
@@ -214,9 +217,16 @@ struct Tracker::Impl {
         const auto& item = selected.pointers[index];
         distance[index * batch + row] = item.position;
         const std::size_t offset = (static_cast<std::size_t>(index) * batch + row) * 256 * element_size(dtype);
-        check_cuda(cudaMemcpyAsync(static_cast<std::byte*>(object_pointers.data) + offset,
-                                   item.value->pointer.data, 256 * element_size(dtype),
-                                   cudaMemcpyDeviceToDevice, stream));
+        auto* destination = static_cast<std::byte*>(object_pointers.data) + offset;
+        if (item.value->pointer.dtype == dtype) {
+          check_cuda(cudaMemcpyAsync(destination, item.value->pointer.data,
+                                     256 * element_size(dtype), cudaMemcpyDeviceToDevice, stream));
+        } else if (item.value->pointer.dtype == nvinfer1::DataType::kFLOAT) {
+          launch_float_conversion(static_cast<const float*>(item.value->pointer.data),
+                                  destination, dtype, 256, stream);
+        } else {
+          throw std::invalid_argument("unsupported object pointer dtype conversion");
+        }
       }
     }
     inputs["mask_memory"] = std::move(memory);
