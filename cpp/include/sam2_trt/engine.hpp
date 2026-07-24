@@ -31,7 +31,7 @@ std::size_t element_size(nvinfer1::DataType dtype);
 
 class Engine {
  public:
-  explicit Engine(const std::string& plan_path);
+  explicit Engine(const std::string& plan_path, bool profile_zero_only = false);
   ~Engine();
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;

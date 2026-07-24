@@ -69,13 +69,16 @@ static std::vector<char> read_plan(const std::string& path) {
   return payload;
 }
 
-Engine::Engine(const std::string& plan_path) : logger_(std::make_unique<Logger>()) {
+Engine::Engine(const std::string& plan_path, bool profile_zero_only)
+    : logger_(std::make_unique<Logger>()) {
   const auto payload = read_plan(plan_path);
   runtime_ = nvinfer1::createInferRuntime(*logger_);
   if (!runtime_) throw std::runtime_error("createInferRuntime failed");
   engine_ = runtime_->deserializeCudaEngine(payload.data(), payload.size());
   if (!engine_) throw std::runtime_error("deserializeCudaEngine failed for " + plan_path);
-  const int profiles = std::max(1, engine_->getNbOptimizationProfiles());
+  const int profiles = profile_zero_only
+      ? 1
+      : std::max(1, engine_->getNbOptimizationProfiles());
   contexts_.reserve(profiles);
   for (int index = 0; index < profiles; ++index) {
     auto* context = engine_->createExecutionContext();
