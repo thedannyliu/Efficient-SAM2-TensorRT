@@ -163,10 +163,26 @@ class InteractiveViewer(Node):
                 self.color_layers[color_key] = color_layer
             if self.blend_buffer is None or self.blend_buffer.shape != overlay.shape:
                 self.blend_buffer = np.empty_like(overlay)
+            x, y, region_width, region_height = cv2.boundingRect(mask)
+            if region_width == 0 or region_height == 0:
+                continue
+            region = np.s_[
+                y : y + region_height,
+                x : x + region_width,
+            ]
             cv2.addWeighted(
-                overlay, 0.55, color_layer, 0.45, 0.0, dst=self.blend_buffer
+                overlay[region],
+                0.55,
+                color_layer[region],
+                0.45,
+                0.0,
+                dst=self.blend_buffer[region],
             )
-            cv2.copyTo(self.blend_buffer, mask, overlay)
+            cv2.copyTo(
+                self.blend_buffer[region],
+                mask[region],
+                overlay[region],
+            )
             if self.draw_contours:
                 contours, _ = cv2.findContours(
                     mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
