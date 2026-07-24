@@ -777,8 +777,36 @@ Services：
 當同一 memory-length bucket 有 5–8 objects，runtime 自動切成兩組執行，不需使用者
 介入。
 
-目前 node 不含 interactive click UI。先從 image viewer 讀出 pixel coordinates，再用
-service 加 object。
+`sam2_trt_interactive_viewer` 提供與既有 ROS benchmark 相同的 OpenCV 操作：
+
+- 左鍵點一下：新增 point-prompt object；
+- 按住左鍵拖曳再放開：新增 box-prompt object；
+- `r`：呼叫 `/sam/reset` 清除所有 objects；
+- `q` 或 `Esc`：關閉 viewer。
+
+Viewer 只把 prompt 送到既有 services，並訂閱 camera、mask 與 result topics。
+TensorRT 推論仍完全在 C++ node；畫面上會顯示 result output FPS、
+`inference_ms`、`worker_total_ms`、`source_age_ms` 與 dropped frames。
+
+在 Thor 本機桌面用一個 command 啟動 RealSense、tracker 與互動 viewer：
+
+```bash
+cd "$SAM2_TRT_ROOT"
+source "$HOME/EfficientSAM3-Benchmark/scripts/source_thor_ros_env.sh"
+source "$SAM2_TRT_ROOT/ros_ws/install/setup.bash"
+export LD_LIBRARY_PATH="$SAM2_TRT_ROOT/build/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+mkdir -p "$SAM2_TRT_ROOT/results/thor/tv5_interactive_001"
+ros2 launch sam2_trt_ros interactive_realsense.launch.py \
+  bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-tinyvit-5m/fp16_aux0" \
+  precision:=fp16 \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/tv5_interactive_001/runtime.jsonl"
+```
+
+從 SSH 啟動到 Thor 的既有桌面時，另外設定該桌面的 `DISPLAY`、
+`XDG_RUNTIME_DIR` 與 `DBUS_SESSION_BUS_ADDRESS`。`q` 只關閉 viewer；
+在 launch terminal 按 `Ctrl+C` 才會一起停止 camera 與 tracker。每個 click
+或 drag 會新增 object，最多八個。
 
 ## 12. 效能記錄方式
 

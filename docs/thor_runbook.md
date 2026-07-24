@@ -117,8 +117,25 @@ Topics:
 - `/sam/result_json`: stamp, object IDs, node-level timing, tracking FPS, and frames
   overwritten by latest-frame scheduling.
 
-The first version intentionally omits corrective clicks, mask prompts, display/overlay on
-the critical path, and NITROS. Adding one point or box creates one new object.
+The runtime intentionally keeps corrective clicks, mask prompts, visualization, and
+NITROS out of the C++ inference critical path. Adding one point or box creates one
+new object.
+
+For live click/drag prompts and a mask/timing overlay on the Thor desktop, source
+the shared ROS venv and use the integrated launch:
+
+```bash
+source "$HOME/EfficientSAM3-Benchmark/scripts/source_thor_ros_env.sh"
+source "$SAM2_TRT_ROOT/ros_ws/install/setup.bash"
+ros2 launch sam2_trt_ros interactive_realsense.launch.py \
+  bundle_dir:="$SAM2_TRT_ROOT/bundles/sam2.1-tinyvit-5m/fp16_aux0" \
+  precision:=fp16 \
+  trace_path:="$SAM2_TRT_ROOT/results/thor/tv5_interactive_001/runtime.jsonl"
+```
+
+Click for a point, drag for a box, press `r` to reset all objects, and press
+`q`/`Esc` to close the viewer. Visualization is a separate ROS subscriber;
+the C++ TensorRT trace remains the latency source of truth.
 
 ## 5. Performance acceptance
 
