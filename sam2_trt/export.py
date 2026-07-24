@@ -256,6 +256,7 @@ def _export_one(
     dynamic_axes,
     *,
     exporter: str = "dynamo",
+    autocast_dtype=None,
 ):
     output.parent.mkdir(parents=True, exist_ok=True)
     options = {
@@ -270,7 +271,13 @@ def _export_one(
         options["verify"] = False
     else:
         options["dynamic_axes"] = dynamic_axes or None
-    torch.onnx.export(module, inputs, os.fspath(output), **options)
+    context = (
+        torch.autocast(device_type=inputs[0].device.type, dtype=autocast_dtype)
+        if autocast_dtype is not None
+        else contextlib.nullcontext()
+    )
+    with context:
+        torch.onnx.export(module, inputs, os.fspath(output), **options)
     if exporter == "dynamo":
         rewrite_dynamic_batch_resize(output)
 
@@ -369,6 +376,7 @@ def export_bundle(
                         "image_embedding": {0: "batch"}, "point_coords": {0: "batch"},
                         "point_labels": {0: "batch"}, **batch_outputs,
                     },
+                    autocast_dtype=torch_dtype if dtype != "fp32" else None,
                 )
 
             mask_memory = torch.zeros(2, 4096, export_batch, 64, device=device, dtype=torch_dtype)
@@ -393,6 +401,7 @@ def export_bundle(
                     "object_pointers": {0: "pointer_frames", 1: "batch"},
                     "pointer_frame_distance": {0: "pointer_frames", 1: "batch"}, **batch_outputs,
                 },
+                autocast_dtype=torch_dtype if dtype != "fp32" else None,
             )
 
     manifest = BundleManifest.create(

@@ -50,6 +50,30 @@ class DynamicInputShapesTest(unittest.TestCase):
         self.assertIsNone(options["dynamic_axes"])
         self.assertNotIn("dynamic_shapes", options)
 
+    def test_export_enters_requested_autocast_context(self):
+        export = Mock()
+        autocast = Mock()
+        autocast.return_value.__enter__ = Mock()
+        autocast.return_value.__exit__ = Mock(return_value=False)
+        torch = SimpleNamespace(autocast=autocast, onnx=SimpleNamespace(export=export))
+        tensor = SimpleNamespace(device=SimpleNamespace(type="cuda"))
+        with tempfile.TemporaryDirectory() as directory:
+            _export_one(
+                torch,
+                object(),
+                (tensor,),
+                Path(directory) / "prompt.onnx",
+                ["embedding"],
+                ["mask"],
+                {},
+                exporter="legacy",
+                autocast_dtype="fp16",
+            )
+
+        autocast.assert_called_once_with(device_type="cuda", dtype="fp16")
+        autocast.return_value.__enter__.assert_called_once_with()
+        autocast.return_value.__exit__.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
