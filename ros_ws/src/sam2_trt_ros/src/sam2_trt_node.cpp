@@ -33,8 +33,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
     const auto max_objects = declare_parameter("max_objects", 8);
     const auto trace_path = declare_parameter("trace_path", "");
-    const auto preview_width = declare_parameter("preview_width", 960);
-    const auto preview_height = declare_parameter("preview_height", 540);
+    const auto preview_width = declare_parameter("preview_width", 640);
+    const auto preview_height = declare_parameter("preview_height", 360);
     declare_parameter("queue_policy", "latest");
     declare_parameter("enable_overlay", false);
     if (bundle.empty()) throw std::invalid_argument("bundle_dir parameter is required");
@@ -94,18 +94,27 @@ class Sam2TrtNode final : public rclcpp::Node {
           std::lock_guard lock(tracker_mutex_);
           tracker_->reset(); response->success = true;
         });
+    preview_worker_ = std::jthread(
+        [this](std::stop_token token) { preview_worker(token); });
     worker_ = std::jthread([this](std::stop_token token) { worker(token); });
   }
 
   ~Sam2TrtNode() override {
     worker_.request_stop();
     frame_ready_.notify_all();
+    preview_worker_.request_stop();
+    preview_ready_.notify_all();
   }
 
  private:
   struct PendingFrame {
     sensor_msgs::msg::Image::ConstSharedPtr message;
     SteadyClock::time_point arrival;
+  };
+
+  struct PreviewJob {
+    sensor_msgs::msg::Image::ConstSharedPtr frame;
+    std::vector<sam2_trt::ObjectMask> masks;
   };
 
   static double milliseconds(SteadyClock::duration duration) {
@@ -165,6 +174,36 @@ class Sam2TrtNode final : public rclcpp::Node {
       }
     }
     return preview;
+  }
+
+  void preview_worker(std::stop_token token) {
+    while (!token.stop_requested()) {
+      std::optional<PreviewJob> job;
+      {
+        std::unique_lock lock(preview_mutex_);
+        preview_ready_.wait(lock, token, [this] {
+          return latest_preview_.has_value();
+        });
+        if (token.stop_requested()) return;
+        job = std::move(latest_preview_);
+        latest_preview_.reset();
+      }
+      const auto start = SteadyClock::now();
+      auto preview = make_preview(*job->frame, job->masks);
+      last_preview_compose_ms_ = milliseconds(SteadyClock::now() - start);
+      preview_publisher_->publish(std::move(preview));
+    }
+  }
+
+  void enqueue_preview(
+      sensor_msgs::msg::Image::ConstSharedPtr frame,
+      std::vector<sam2_trt::ObjectMask> masks) {
+    {
+      std::lock_guard lock(preview_mutex_);
+      if (latest_preview_) ++dropped_previews_;
+      latest_preview_ = PreviewJob{std::move(frame), std::move(masks)};
+    }
+    preview_ready_.notify_one();
   }
 
   void worker(std::stop_token token) {
@@ -236,13 +275,6 @@ class Sam2TrtNode final : public rclcpp::Node {
       if (index == 0 && publish_legacy_mask) mask_publisher_->publish(message);
       if (publish_object_masks) object_mask_publisher_->publish(std::move(message));
     }
-    double preview_compose_ms = 0.0;
-    if (preview_publisher_->get_subscription_count() > 0) {
-      const auto preview_start = SteadyClock::now();
-      auto preview = make_preview(*frame, masks);
-      preview_compose_ms = milliseconds(SteadyClock::now() - preview_start);
-      preview_publisher_->publish(std::move(preview));
-    }
     const auto metrics_time = SteadyClock::now();
     const double callback_total_ms = milliseconds(metrics_time - pending.arrival);
     const double worker_total_ms = milliseconds(metrics_time - worker_start);
@@ -272,7 +304,8 @@ class Sam2TrtNode final : public rclcpp::Node {
          << ",\"host_mask_copy_ms\":" << tracker_timings.host_mask_copy_ms
          << ",\"tracker_total_ms\":" << tracker_timings.total_ms
          << ",\"mask_publish_ms\":" << milliseconds(metrics_time - mask_publish_start)
-         << ",\"preview_compose_ms\":" << preview_compose_ms
+         << ",\"preview_compose_ms\":" << last_preview_compose_ms_.load()
+         << ",\"dropped_previews\":" << dropped_previews_.load()
          << ",\"callback_total_ms\":" << callback_total_ms
          << ",\"worker_total_ms\":" << worker_total_ms
          << ",\"frame_interval_ms\":" << frame_interval_ms
@@ -298,6 +331,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     result.data = json.str();
     result_publisher_->publish(result);
     if (trace_) trace_ << result.data << '\n';
+    if (preview_publisher_->get_subscription_count() > 0)
+      enqueue_preview(frame, std::move(masks));
   }
 
   std::unique_ptr<sam2_trt::Tracker> tracker_;
@@ -310,15 +345,21 @@ class Sam2TrtNode final : public rclcpp::Node {
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
   std::mutex tracker_mutex_;
   std::mutex frame_mutex_;
+  std::mutex preview_mutex_;
   std::condition_variable_any frame_ready_;
+  std::condition_variable_any preview_ready_;
   std::optional<PendingFrame> latest_;
+  std::optional<PreviewJob> latest_preview_;
   std::atomic<std::uint64_t> dropped_frames_{0};
+  std::atomic<std::uint64_t> dropped_previews_{0};
+  std::atomic<double> last_preview_compose_ms_{0.0};
   std::uint64_t last_reported_dropped_frames_{0};
   std::uint64_t processed_frames_{0};
   std::optional<SteadyClock::time_point> previous_worker_start_;
   int preview_width_{};
   int preview_height_{};
   std::ofstream trace_;
+  std::jthread preview_worker_;
   std::jthread worker_;
 };
 

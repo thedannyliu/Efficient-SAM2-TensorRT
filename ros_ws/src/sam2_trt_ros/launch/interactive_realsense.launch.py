@@ -20,8 +20,8 @@ def generate_launch_description():
             DeclareLaunchArgument("display_max_width", default_value="1280"),
             DeclareLaunchArgument("replace_on_prompt", default_value="true"),
             DeclareLaunchArgument("draw_contours", default_value="false"),
-            DeclareLaunchArgument("preview_width", default_value="960"),
-            DeclareLaunchArgument("preview_height", default_value="540"),
+            DeclareLaunchArgument("preview_width", default_value="640"),
+            DeclareLaunchArgument("preview_height", default_value="360"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution(

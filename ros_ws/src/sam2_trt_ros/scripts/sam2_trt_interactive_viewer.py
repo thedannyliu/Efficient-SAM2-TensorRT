@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 from collections import deque
-from time import perf_counter
+from threading import Thread
+from time import perf_counter, sleep
 
 import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -101,7 +103,7 @@ class InteractiveViewer(Node):
         self.add_client = self.create_client(AddObject, "/sam/add_object")
         self.reset_client = self.create_client(Trigger, "/sam/reset")
         display_fps = float(self.get_parameter("display_fps").value)
-        self.create_timer(1.0 / display_fps, self.display)
+        self.display_period = 1.0 / display_fps
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(self.window_name, self.on_mouse)
@@ -449,9 +451,21 @@ class InteractiveViewer(Node):
 def main() -> None:
     rclpy.init()
     node = InteractiveViewer()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    spin_thread = Thread(
+        target=executor.spin,
+        name="sam2-trt-viewer-ros",
+        daemon=True,
+    )
+    spin_thread.start()
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and spin_thread.is_alive():
+            node.display()
+            sleep(node.display_period)
     finally:
+        executor.shutdown()
+        spin_thread.join(timeout=5.0)
         cv2.destroyAllWindows()
         node.destroy_node()
         if rclpy.ok():
