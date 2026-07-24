@@ -36,7 +36,9 @@ struct TrackerTimings {
 
 class Tracker {
  public:
-  Tracker(const std::string& bundle_directory, const std::string& precision, int max_objects = 8);
+  Tracker(
+      const std::string& bundle_directory, const std::string& precision,
+      int max_objects = 8, int track_concurrency = 8);
   ~Tracker();
   Tracker(const Tracker&) = delete;
   Tracker& operator=(const Tracker&) = delete;

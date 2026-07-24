@@ -36,13 +36,15 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto precision = declare_parameter("precision", "fp32");
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
     const auto max_objects = declare_parameter("max_objects", 8);
+    const auto track_concurrency = declare_parameter("track_concurrency", max_objects);
     const auto trace_path = declare_parameter("trace_path", "");
     const auto preview_width = declare_parameter("preview_width", 640);
     const auto preview_height = declare_parameter("preview_height", 360);
     declare_parameter("queue_policy", "latest");
     declare_parameter("enable_overlay", false);
     if (bundle.empty()) throw std::invalid_argument("bundle_dir parameter is required");
-    tracker_ = std::make_unique<sam2_trt::Tracker>(bundle, precision, max_objects);
+    tracker_ = std::make_unique<sam2_trt::Tracker>(
+        bundle, precision, max_objects, track_concurrency);
     if (!trace_path.empty()) {
       const std::filesystem::path path(trace_path);
       if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());

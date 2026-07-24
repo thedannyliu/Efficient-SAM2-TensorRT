@@ -14,6 +14,7 @@ def generate_launch_description():
             DeclareLaunchArgument("precision", default_value="fp16"),
             DeclareLaunchArgument("image_topic", default_value="/camera/camera/color/image_raw"),
             DeclareLaunchArgument("max_objects", default_value="8"),
+            DeclareLaunchArgument("track_concurrency", default_value="8"),
             DeclareLaunchArgument("trace_path", default_value=""),
             DeclareLaunchArgument("display_scale", default_value="1.0"),
             DeclareLaunchArgument("display_max_width", default_value="1280"),
@@ -66,6 +67,10 @@ def generate_launch_description():
                                 "queue_policy": "latest",
                                 "max_objects": ParameterValue(
                                     LaunchConfiguration("max_objects"),
+                                    value_type=int,
+                                ),
+                                "track_concurrency": ParameterValue(
+                                    LaunchConfiguration("track_concurrency"),
                                     value_type=int,
                                 ),
                                 "trace_path": LaunchConfiguration("trace_path"),

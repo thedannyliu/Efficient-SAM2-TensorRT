@@ -102,6 +102,7 @@ struct Tracker::Impl {
   cudaEvent_t encoder_end{};
   cudaEvent_t gpu_end{};
   int maximum_objects;
+  int track_concurrency;
   int next_id{1};
   int frame_index{0};
   std::vector<ObjectState> objects;
@@ -112,12 +113,17 @@ struct Tracker::Impl {
   std::mutex timing_mutex;
   std::mutex mutex;
 
-  Impl(const std::string& root, const std::string& precision, int maximum)
+  Impl(
+      const std::string& root, const std::string& precision, int maximum,
+      int concurrency)
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
-        maximum_objects(maximum) {
+        maximum_objects(maximum),
+        track_concurrency(concurrency) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
+    if (concurrency < 1 || concurrency > maximum)
+      throw std::invalid_argument("track_concurrency must be in [1, max_objects]");
     check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     check_cuda(cudaEventCreateWithFlags(&encoded_ready, cudaEventDisableTiming));
     const auto track_path =
@@ -402,6 +408,16 @@ struct Tracker::Impl {
       buckets[{selected.memories.size(), selected.pointers.size()}].push_back({&object, std::move(selected)});
     }
     std::vector<std::future<std::vector<ObjectMask>>> track_futures;
+    const auto collect_futures = [&]() {
+      for (auto& future : track_futures) {
+        auto output = future.get();
+        masks.insert(
+            masks.end(),
+            std::make_move_iterator(output.begin()),
+            std::make_move_iterator(output.end()));
+      }
+      track_futures.clear();
+    };
     for (auto& [key, entries] : buckets) {
       for (auto& entry : entries) {
         auto* object = entry.first;
@@ -416,15 +432,11 @@ struct Tracker::Impl {
               return run_track_group(
                   encoded, std::move(group), selections, width, height);
             }));
+        if (static_cast<int>(track_futures.size()) == track_concurrency)
+          collect_futures();
       }
     }
-    for (auto& future : track_futures) {
-      auto output = future.get();
-      masks.insert(
-          masks.end(),
-          std::make_move_iterator(output.begin()),
-          std::make_move_iterator(output.end()));
-    }
+    collect_futures();
     check_cuda(cudaEventRecord(gpu_end, stream));
     check_cuda(cudaEventSynchronize(gpu_end));
     float encoder_ms = 0.0f;
@@ -443,8 +455,11 @@ struct Tracker::Impl {
   }
 };
 
-Tracker::Tracker(const std::string& bundle, const std::string& precision, int maximum)
-    : impl_(std::make_unique<Impl>(bundle, precision, maximum)) {}
+Tracker::Tracker(
+    const std::string& bundle, const std::string& precision, int maximum,
+    int track_concurrency)
+    : impl_(std::make_unique<Impl>(
+          bundle, precision, maximum, track_concurrency)) {}
 Tracker::~Tracker() = default;
 
 int Tracker::add_object(const Prompt& prompt) {
