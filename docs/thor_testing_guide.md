@@ -749,7 +749,7 @@ ros2 topic echo /sam/result_json
 `/sam/result_json` 範例：
 
 ```json
-{"stamp_ns":123456789,"frame_index":42,"objects":[1,2],"queue_wait_ms":0.031,"color_convert_ms":0.481,"inference_ms":21.732,"mask_publish_ms":0.109,"callback_total_ms":22.368,"frame_interval_ms":33.333,"tracking_fps":30.000,"dropped":0,"dropped_frames":17,"source_age_ms":24.126,"end_to_end_ms":24.126}
+{"stamp_ns":123456789,"frame_index":42,"objects":[1,2],"queue_wait_ms":0.031,"color_convert_ms":0.481,"inference_ms":21.732,"mask_publish_ms":0.109,"worker_total_ms":22.322,"callback_total_ms":22.353,"frame_interval_ms":33.333,"processing_capacity_fps":44.799,"processed_fps":30.000,"tracking_fps":30.000,"dropped":0,"dropped_frames":17,"source_age_ms":24.126,"end_to_end_ms":24.126}
 ```
 
 `dropped_frames` 是 latest-frame slot 被新 frame 覆寫的累計數。Camera FPS 高於

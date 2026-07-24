@@ -216,6 +216,18 @@ same run with the corrected worker metric and after the D455F negotiates USB 3
 before recording final camera FPS. The correction has negligible effect on
 this legacy run because its measured queue wait was negligible.
 
+The corrected node was then rebuilt and run on Thor at commit `8fc2769`.
+Across 37 frames, `callback_total_ms - queue_wait_ms - worker_total_ms` had a
+maximum absolute error of 0.001 ms (the JSON rounding unit), and the summary
+recomputed 36 intervals over 32.292 s as 1.115 FPS. The 16 one-object frames
+had 42.303 ms mean worker time, or 23.64 FPS processing capacity; their
+interval-based throughput was only 0.863 FPS. Queue wait averaged 0.096 ms and
+no frame was overwritten in the node. `lsusb -t` still showed the D455F on
+480 Mbit/s USB 2, while the driver requested 640x480 RGB8 at 15 FPS. The
+observed intervals ranged from 66.5 ms to 10.21 s, confirming that the
+remaining FPS deficit is irregular upstream delivery rather than TensorRT
+service time or a metric formula error.
+
 Artifacts remain ignored under:
 
 ```text
@@ -223,6 +235,7 @@ results/thor/tv5_fp16_aux0/engines/
 results/thor/tv5_fp16_aux0/prompt_parity/
 results/thor/tv5_fp16_aux0/box_parity/
 results/thor/tv5_fp16_aux0/realsense_usb2_box_metrics_v2/
+results/thor/tv5_fp16_aux0/realsense_metric_fix_8fc2769/
 ```
 
 ## Planned precision ablations
