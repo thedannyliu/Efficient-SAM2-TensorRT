@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 
 def display_to_image_point(
@@ -41,3 +41,6 @@ def event_rate_hz(timestamps: Sequence[float]) -> float:
     duration = timestamps[-1] - timestamps[0]
     return (len(timestamps) - 1) / duration if duration > 0 else 0.0
 
+
+def all_masks_ready(expected_ids: Collection[int], available_ids: Collection[int]) -> bool:
+    return set(expected_ids).issubset(available_ids)

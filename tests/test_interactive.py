@@ -1,6 +1,11 @@
 import unittest
 
-from sam2_trt.interactive import display_to_image_point, drag_to_box, event_rate_hz
+from sam2_trt.interactive import (
+    all_masks_ready,
+    display_to_image_point,
+    drag_to_box,
+    event_rate_hz,
+)
 
 
 class InteractiveTest(unittest.TestCase):
@@ -19,7 +24,11 @@ class InteractiveTest(unittest.TestCase):
         self.assertEqual(event_rate_hz([]), 0.0)
         self.assertAlmostEqual(event_rate_hz([1.0, 1.1, 1.2]), 10.0)
 
+    def test_all_masks_must_arrive_before_display(self):
+        self.assertFalse(all_masks_ready([1, 2], [1]))
+        self.assertTrue(all_masks_ready([1, 2], [2, 1]))
+        self.assertTrue(all_masks_ready([], []))
+
 
 if __name__ == "__main__":
     unittest.main()
-

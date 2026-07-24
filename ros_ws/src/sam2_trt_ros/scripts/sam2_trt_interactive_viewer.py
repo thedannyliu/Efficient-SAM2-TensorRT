@@ -17,7 +17,12 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from sam2_trt.interactive import display_to_image_point, drag_to_box, event_rate_hz
+from sam2_trt.interactive import (
+    all_masks_ready,
+    display_to_image_point,
+    drag_to_box,
+    event_rate_hz,
+)
 from sam2_trt_msgs.srv import AddObject
 
 
@@ -36,16 +41,19 @@ class InteractiveViewer(Node):
         self.declare_parameter("display_scale", 1.0)
         self.declare_parameter("display_max_width", 1280)
         self.declare_parameter("box_drag_min_pixels", 5.0)
+        self.declare_parameter("replace_on_prompt", True)
 
         self.bridge = CvBridge()
         self.window_name = str(self.get_parameter("window_name").value)
         self.display_scale = float(self.get_parameter("display_scale").value)
         self.display_max_width = int(self.get_parameter("display_max_width").value)
         self.box_drag_min_pixels = float(self.get_parameter("box_drag_min_pixels").value)
+        self.replace_on_prompt = bool(self.get_parameter("replace_on_prompt").value)
         self.current_scale = 1.0
         self.frames: dict[int, np.ndarray] = {}
         self.frame_order: deque[int] = deque()
         self.masks: dict[int, dict[int, np.ndarray]] = {}
+        self.results: dict[int, dict[str, object]] = {}
         self.latest_frame: np.ndarray | None = None
         self.latest_overlay: np.ndarray | None = None
         self.latest_overlay_stamp = 0
@@ -54,6 +62,7 @@ class InteractiveViewer(Node):
         self.drag_start: tuple[float, float] | None = None
         self.drag_current: tuple[float, float] | None = None
         self.prompt_marker: tuple[str, tuple[float, ...], float] | None = None
+        self.prompt_in_flight = False
         self.status = "Click for point or drag for box"
 
         image_topic = str(self.get_parameter("image_topic").value)
@@ -87,6 +96,7 @@ class InteractiveViewer(Node):
             old_stamp = self.frame_order.popleft()
             self.frames.pop(old_stamp, None)
             self.masks.pop(old_stamp, None)
+            self.results.pop(old_stamp, None)
         if self.latest_overlay is None:
             self.latest_overlay = frame.copy()
 
@@ -97,7 +107,7 @@ class InteractiveViewer(Node):
         stamp = self.stamp_ns(message)
         mask = self.bridge.imgmsg_to_cv2(message, desired_encoding="mono8")
         self.masks.setdefault(stamp, {})[int(match.group(1))] = mask
-        self.compose_overlay(stamp)
+        self.compose_overlay_if_ready(stamp)
 
     def on_result(self, message: String) -> None:
         try:
@@ -109,16 +119,23 @@ class InteractiveViewer(Node):
         frame = self.frames.get(stamp, self.latest_frame)
         if frame is None:
             return
+        self.results[stamp] = result
         self.latest_result = result
         self.result_times.append(perf_counter())
-        self.compose_overlay(stamp)
+        self.compose_overlay_if_ready(stamp)
 
-    def compose_overlay(self, stamp: int) -> None:
+    def compose_overlay_if_ready(self, stamp: int) -> None:
         frame = self.frames.get(stamp)
-        if frame is None or stamp < self.latest_overlay_stamp:
+        result = self.results.get(stamp)
+        if frame is None or result is None or stamp < self.latest_overlay_stamp:
+            return
+        expected = {int(object_id) for object_id in result.get("objects", [])}
+        available = self.masks.get(stamp, {})
+        if not all_masks_ready(expected, available):
             return
         overlay = frame.copy()
-        for object_id, mask in self.masks.get(stamp, {}).items():
+        for object_id in expected:
+            mask = available[object_id]
             selected = mask > 0
             color = np.asarray(_COLORS[(object_id - 1) % len(_COLORS)], dtype=np.float32)
             overlay[selected] = (
@@ -158,9 +175,50 @@ class InteractiveViewer(Node):
             self.prompt_marker = ("box", box, perf_counter())
 
     def send_prompt(self, kind: int, x0: float, y0: float, x1: float, y1: float) -> None:
+        if self.prompt_in_flight:
+            self.status = "Wait for the previous prompt"
+            return
         if not self.add_client.service_is_ready():
             self.status = "Tracker service is not ready"
             return
+        prompt = kind, x0, y0, x1, y1
+        if self.replace_on_prompt:
+            if not self.reset_client.service_is_ready():
+                self.status = "Reset service is not ready"
+                return
+            self.prompt_in_flight = True
+            self.status = "Resetting previous object"
+            future = self.reset_client.call_async(Trigger.Request())
+            future.add_done_callback(lambda done: self.after_prompt_reset(done, prompt))
+            return
+        self.submit_prompt(prompt)
+
+    def after_prompt_reset(
+        self,
+        future: object,
+        prompt: tuple[int, float, float, float, float],
+    ) -> None:
+        try:
+            response = future.result()
+            if not response.success:
+                self.status = f"Reset failed: {response.message}"
+                self.prompt_in_flight = False
+                return
+        except Exception as error:
+            self.status = f"Reset failed: {error}"
+            self.prompt_in_flight = False
+            return
+        self.masks.clear()
+        self.results.clear()
+        self.latest_result = {}
+        self.latest_overlay_stamp = 0
+        if self.latest_frame is not None:
+            self.latest_overlay = self.latest_frame.copy()
+        self.submit_prompt(prompt)
+
+    def submit_prompt(self, prompt: tuple[int, float, float, float, float]) -> None:
+        kind, x0, y0, x1, y1 = prompt
+        self.prompt_in_flight = True
         request = AddObject.Request()
         request.kind = kind
         request.x0, request.y0 = float(x0), float(y0)
@@ -171,6 +229,7 @@ class InteractiveViewer(Node):
         future.add_done_callback(lambda done: self.on_prompt_response(done, mode))
 
     def on_prompt_response(self, future: object, mode: str) -> None:
+        self.prompt_in_flight = False
         try:
             response = future.result()
             self.status = (
@@ -187,7 +246,11 @@ class InteractiveViewer(Node):
             return
         self.reset_client.call_async(Trigger.Request())
         self.masks.clear()
+        self.results.clear()
         self.latest_result = {}
+        self.latest_overlay_stamp = 0
+        if self.latest_frame is not None:
+            self.latest_overlay = self.latest_frame.copy()
         self.prompt_marker = None
         self.status = "Reset; click for point or drag for box"
 

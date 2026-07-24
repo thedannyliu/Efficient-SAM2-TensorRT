@@ -18,6 +18,7 @@ def generate_launch_description():
             DeclareLaunchArgument("trace_path", default_value=""),
             DeclareLaunchArgument("display_scale", default_value="1.0"),
             DeclareLaunchArgument("display_max_width", default_value="1280"),
+            DeclareLaunchArgument("replace_on_prompt", default_value="true"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution(
@@ -56,6 +57,9 @@ def generate_launch_description():
                         ),
                         "display_max_width": ParameterValue(
                             LaunchConfiguration("display_max_width"), value_type=int
+                        ),
+                        "replace_on_prompt": ParameterValue(
+                            LaunchConfiguration("replace_on_prompt"), value_type=bool
                         ),
                     }
                 ],
