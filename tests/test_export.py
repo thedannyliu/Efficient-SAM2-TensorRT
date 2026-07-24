@@ -98,14 +98,25 @@ class DynamicInputShapesTest(unittest.TestCase):
     def test_fp32_layer_norm_export_preserves_interface_dtype_and_restores_forward(self):
         import torch
 
-        layer = torch.nn.LayerNorm(4).half()
-        original = layer.forward
+        class LayerNorm2d(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(4))
+                self.bias = torch.nn.Parameter(torch.zeros(4))
+                self.eps = 1e-6
+
+            def forward(self, values):
+                return values
+
+        module = torch.nn.Sequential(torch.nn.LayerNorm(4), LayerNorm2d()).half()
+        original = [child.forward for child in module]
         inputs = torch.randn(2, 4, dtype=torch.float16)
-        with fp32_layer_norm_export(torch, layer) as patched:
-            output = layer(inputs)
-            self.assertEqual(patched, 1)
-            self.assertEqual(output.dtype, torch.float16)
-        self.assertEqual(layer.forward, original)
+        images = torch.randn(2, 4, 3, 3, dtype=torch.float16)
+        with fp32_layer_norm_export(torch, module) as patched:
+            self.assertEqual(module[0](inputs).dtype, torch.float16)
+            self.assertEqual(module[1](images).dtype, torch.float16)
+            self.assertEqual(patched, 2)
+        self.assertEqual([child.forward for child in module], original)
 
 
 if __name__ == "__main__":

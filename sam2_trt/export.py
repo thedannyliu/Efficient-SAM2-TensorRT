@@ -104,7 +104,7 @@ def patch_onnx_stability_scores(torch, model) -> None:
 def fp32_layer_norm_export(torch, module):
     replacements = []
 
-    def forward(layer, inputs):
+    def layer_norm_forward(layer, inputs):
         output = torch.nn.functional.layer_norm(
             inputs.float(),
             layer.normalized_shape,
@@ -114,10 +114,22 @@ def fp32_layer_norm_export(torch, module):
         )
         return output.to(dtype=inputs.dtype)
 
+    def layer_norm_2d_forward(layer, inputs):
+        values = inputs.float()
+        channel_mean = values.mean(1, keepdim=True)
+        variance = (values - channel_mean).pow(2).mean(1, keepdim=True)
+        output = (values - channel_mean) / torch.sqrt(variance + layer.eps)
+        output = layer.weight.float()[:, None, None] * output
+        output = output + layer.bias.float()[:, None, None]
+        return output.to(dtype=inputs.dtype)
+
     for child in module.modules():
         if isinstance(child, torch.nn.LayerNorm):
             replacements.append((child, child.forward))
-            child.forward = MethodType(forward, child)
+            child.forward = MethodType(layer_norm_forward, child)
+        elif child.__class__.__name__ == "LayerNorm2d":
+            replacements.append((child, child.forward))
+            child.forward = MethodType(layer_norm_2d_forward, child)
     try:
         yield len(replacements)
     finally:
