@@ -34,6 +34,7 @@ class InteractiveViewer(Node):
     def __init__(self) -> None:
         super().__init__("sam2_trt_interactive_viewer")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter("preview_topic", "/sam/preview")
         self.declare_parameter("mask_topic", "/sam/object_masks")
         self.declare_parameter("result_topic", "/sam/result_json")
         self.declare_parameter("window_name", "SAM2 TensorRT tracking")
@@ -43,6 +44,9 @@ class InteractiveViewer(Node):
         self.declare_parameter("box_drag_min_pixels", 5.0)
         self.declare_parameter("replace_on_prompt", True)
         self.declare_parameter("draw_contours", False)
+        self.declare_parameter("use_preview", True)
+        self.declare_parameter("source_width", 1280)
+        self.declare_parameter("source_height", 720)
 
         self.bridge = CvBridge()
         self.window_name = str(self.get_parameter("window_name").value)
@@ -51,6 +55,9 @@ class InteractiveViewer(Node):
         self.box_drag_min_pixels = float(self.get_parameter("box_drag_min_pixels").value)
         self.replace_on_prompt = bool(self.get_parameter("replace_on_prompt").value)
         self.draw_contours = bool(self.get_parameter("draw_contours").value)
+        self.use_preview = bool(self.get_parameter("use_preview").value)
+        self.source_width = int(self.get_parameter("source_width").value)
+        self.source_height = int(self.get_parameter("source_height").value)
         self.current_scale = 1.0
         self.frames: dict[int, np.ndarray] = {}
         self.frame_order: deque[int] = deque()
@@ -76,10 +83,20 @@ class InteractiveViewer(Node):
         self.status = "Click for point or drag for box"
 
         image_topic = str(self.get_parameter("image_topic").value)
+        preview_topic = str(self.get_parameter("preview_topic").value)
         mask_topic = str(self.get_parameter("mask_topic").value)
         result_topic = str(self.get_parameter("result_topic").value)
-        self.create_subscription(Image, image_topic, self.on_image, qos_profile_sensor_data)
-        self.create_subscription(Image, mask_topic, self.on_mask, qos_profile_sensor_data)
+        if self.use_preview:
+            self.create_subscription(
+                Image, preview_topic, self.on_preview, qos_profile_sensor_data
+            )
+        else:
+            self.create_subscription(
+                Image, image_topic, self.on_image, qos_profile_sensor_data
+            )
+            self.create_subscription(
+                Image, mask_topic, self.on_mask, qos_profile_sensor_data
+            )
         self.create_subscription(String, result_topic, self.on_result, 10)
         self.add_client = self.create_client(AddObject, "/sam/add_object")
         self.reset_client = self.create_client(Trigger, "/sam/reset")
@@ -88,8 +105,10 @@ class InteractiveViewer(Node):
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(self.window_name, self.on_mouse)
+        display_topic = preview_topic if self.use_preview else image_topic
         self.get_logger().info(
-            f"interactive viewer on {image_topic}; click=point, drag=box, r=reset, q=quit"
+            f"interactive viewer on {display_topic}; "
+            "click=point, drag=box, r=reset, q=quit"
         )
 
     @staticmethod
@@ -109,6 +128,13 @@ class InteractiveViewer(Node):
             self.results.pop(old_stamp, None)
         if self.latest_overlay is None:
             self.latest_overlay = frame.copy()
+
+    def on_preview(self, message: Image) -> None:
+        self.on_image(message)
+        stamp = self.stamp_ns(message)
+        frame = self.frames[stamp]
+        self.latest_overlay = frame
+        self.latest_overlay_stamp = stamp
 
     def on_mask(self, message: Image) -> None:
         match = _OBJECT_ID.search(message.header.frame_id)
@@ -131,13 +157,18 @@ class InteractiveViewer(Node):
             return
         self.results[stamp] = result
         self.latest_result = result
+        self.source_width = int(result.get("source_width", self.source_width))
+        self.source_height = int(result.get("source_height", self.source_height))
+        if self.use_preview:
+            self.compose_ms = float(result.get("preview_compose_ms", 0.0))
         self.result_times.append(perf_counter())
         stamp_seconds = stamp * 1e-9
         if stamp > 0 and (
             not self.tracker_stamps or stamp_seconds > self.tracker_stamps[-1]
         ):
             self.tracker_stamps.append(stamp_seconds)
-        self.compose_overlay_if_ready(stamp)
+        if not self.use_preview:
+            self.compose_overlay_if_ready(stamp)
 
     def compose_overlay_if_ready(self, stamp: int) -> None:
         frame = self.frames.get(stamp)
@@ -198,7 +229,17 @@ class InteractiveViewer(Node):
         if self.latest_frame is None:
             return
         height, width = self.latest_frame.shape[:2]
-        point = display_to_image_point(x, y, self.current_scale, width, height)
+        preview_point = display_to_image_point(
+            x, y, self.current_scale, width, height
+        )
+        point = (
+            (
+                preview_point[0] * self.source_width / width,
+                preview_point[1] * self.source_height / height,
+            )
+            if preview_point is not None
+            else None
+        )
         if event == cv2.EVENT_LBUTTONDOWN and point is not None:
             self.drag_start = point
             self.drag_current = point
@@ -214,7 +255,13 @@ class InteractiveViewer(Node):
         self.drag_current = None
         if point is None:
             return
-        box = drag_to_box(start, point, width, height, self.box_drag_min_pixels)
+        box = drag_to_box(
+            start,
+            point,
+            self.source_width,
+            self.source_height,
+            self.box_drag_min_pixels,
+        )
         if box is None:
             self.send_prompt(AddObject.Request.POINT, point[0], point[1], 0.0, 0.0)
             self.prompt_marker = ("point", point, perf_counter())
@@ -342,18 +389,30 @@ class InteractiveViewer(Node):
             self.reset()
 
     def draw_interaction(self, frame: np.ndarray) -> None:
+        scale_x = frame.shape[1] / self.source_width
+        scale_y = frame.shape[0] / self.source_height
+
+        def display_point(point: tuple[float, ...]) -> tuple[int, int]:
+            return int(point[0] * scale_x), int(point[1] * scale_y)
+
         if self.drag_start is not None and self.drag_current is not None:
-            start = tuple(int(value) for value in self.drag_start)
-            end = tuple(int(value) for value in self.drag_current)
+            start = display_point(self.drag_start)
+            end = display_point(self.drag_current)
             cv2.rectangle(frame, start, end, (0, 255, 255), 2)
         marker = self.prompt_marker
         if marker is None or perf_counter() - marker[2] > 0.7:
             return
         if marker[0] == "point":
-            cv2.circle(frame, (int(marker[1][0]), int(marker[1][1])), 7, (0, 255, 255), -1)
+            cv2.circle(frame, display_point(marker[1]), 7, (0, 255, 255), -1)
         else:
             x0, y0, x1, y1 = marker[1]
-            cv2.rectangle(frame, (int(x0), int(y0)), (int(x1), int(y1)), (0, 255, 255), 2)
+            cv2.rectangle(
+                frame,
+                display_point((x0, y0)),
+                display_point((x1, y1)),
+                (0, 255, 255),
+                2,
+            )
 
     def draw_metrics(self, frame: np.ndarray) -> None:
         result = self.latest_result

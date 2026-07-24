@@ -12,7 +12,10 @@
 
 namespace sam2_trt {
 
-struct CudaDeleter { void operator()(void* pointer) const noexcept; };
+struct CudaDeleter {
+  cudaStream_t stream{};
+  void operator()(void* pointer) const noexcept;
+};
 
 struct DeviceTensor {
   std::shared_ptr<void> storage;
@@ -22,7 +25,8 @@ struct DeviceTensor {
   std::size_t bytes{};
 };
 
-DeviceTensor allocate_tensor(std::vector<int64_t> shape, nvinfer1::DataType dtype);
+DeviceTensor allocate_tensor(
+    std::vector<int64_t> shape, nvinfer1::DataType dtype, cudaStream_t stream);
 std::size_t element_size(nvinfer1::DataType dtype);
 
 class Engine {

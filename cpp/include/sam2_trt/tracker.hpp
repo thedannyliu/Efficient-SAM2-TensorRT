@@ -25,6 +25,15 @@ struct ObjectMask {
   std::vector<std::uint8_t> mono8;
 };
 
+struct TrackerTimings {
+  double host_input_copy_ms{};
+  double encoder_gpu_ms{};
+  double tail_gpu_ms{};
+  double gpu_total_ms{};
+  double host_mask_copy_ms{};
+  double total_ms{};
+};
+
 class Tracker {
  public:
   Tracker(const std::string& bundle_directory, const std::string& precision, int max_objects = 8);
@@ -36,6 +45,7 @@ class Tracker {
   void reset();
   std::vector<ObjectMask> process_rgb8(
       const std::uint8_t* image, int width, int height, std::size_t row_stride);
+  TrackerTimings last_timings() const;
 
  private:
   struct Impl;

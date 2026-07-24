@@ -14,7 +14,13 @@ class Engine::Logger final : public nvinfer1::ILogger {
   }
 };
 
-void CudaDeleter::operator()(void* pointer) const noexcept { cudaFree(pointer); }
+void CudaDeleter::operator()(void* pointer) const noexcept {
+  if (stream) {
+    cudaFreeAsync(pointer, stream);
+  } else {
+    cudaFree(pointer);
+  }
+}
 
 std::size_t element_size(nvinfer1::DataType dtype) {
   switch (dtype) {
@@ -31,7 +37,8 @@ std::size_t element_size(nvinfer1::DataType dtype) {
   }
 }
 
-DeviceTensor allocate_tensor(std::vector<int64_t> shape, nvinfer1::DataType dtype) {
+DeviceTensor allocate_tensor(
+    std::vector<int64_t> shape, nvinfer1::DataType dtype, cudaStream_t stream) {
   std::size_t count = 1;
   for (auto dimension : shape) {
     if (dimension < 0) throw std::invalid_argument("cannot allocate a dynamic tensor dimension");
@@ -39,9 +46,16 @@ DeviceTensor allocate_tensor(std::vector<int64_t> shape, nvinfer1::DataType dtyp
   }
   const std::size_t bytes = count * element_size(dtype);
   void* pointer = nullptr;
-  if (const auto status = cudaMalloc(&pointer, bytes); status != cudaSuccess)
+  const auto status = stream ? cudaMallocAsync(&pointer, bytes, stream) : cudaMalloc(&pointer, bytes);
+  if (status != cudaSuccess)
     throw std::runtime_error(cudaGetErrorString(status));
-  return {std::shared_ptr<void>(pointer, CudaDeleter{}), pointer, std::move(shape), dtype, bytes};
+  return {
+      std::shared_ptr<void>(pointer, CudaDeleter{stream}),
+      pointer,
+      std::move(shape),
+      dtype,
+      bytes,
+  };
 }
 
 static std::vector<char> read_plan(const std::string& path) {
@@ -119,7 +133,10 @@ std::map<std::string, DeviceTensor> Engine::run(
     const char* raw_name = engine_->getIOTensorName(index);
     if (engine_->getTensorIOMode(raw_name) != nvinfer1::TensorIOMode::kOUTPUT) continue;
     std::string name(raw_name);
-    auto tensor = allocate_tensor(from_dims(context->getTensorShape(raw_name)), engine_->getTensorDataType(raw_name));
+    auto tensor = allocate_tensor(
+        from_dims(context->getTensorShape(raw_name)),
+        engine_->getTensorDataType(raw_name),
+        stream);
     if (!context->setTensorAddress(raw_name, tensor.data))
       throw std::runtime_error("setTensorAddress failed: " + name);
     outputs.emplace(std::move(name), std::move(tensor));

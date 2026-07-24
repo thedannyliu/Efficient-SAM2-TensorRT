@@ -7,8 +7,12 @@
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -33,13 +37,36 @@ DeviceTensor repeat_batch(const DeviceTensor& source, int batch, cudaStream_t st
   if (!source.shape.empty() && source.shape.front() == batch) return source;
   auto shape = source.shape;
   shape[0] = batch;
-  auto output = allocate_tensor(shape, source.dtype);
+  auto output = allocate_tensor(shape, source.dtype, stream);
   const std::size_t per_batch = source.bytes / static_cast<std::size_t>(source.shape.front());
   for (int index = 0; index < batch; ++index)
     check_cuda(cudaMemcpyAsync(static_cast<std::byte*>(output.data) + index * per_batch,
                                source.data, per_batch, cudaMemcpyDeviceToDevice, stream));
   return output;
 }
+
+class PinnedBytes {
+ public:
+  PinnedBytes() = default;
+  ~PinnedBytes() {
+    if (data_) cudaFreeHost(data_);
+  }
+  PinnedBytes(const PinnedBytes&) = delete;
+  PinnedBytes& operator=(const PinnedBytes&) = delete;
+
+  std::uint8_t* ensure(std::size_t bytes) {
+    if (bytes <= capacity_) return data_;
+    if (data_) check_cuda(cudaFreeHost(data_));
+    check_cuda(cudaHostAlloc(
+        reinterpret_cast<void**>(&data_), bytes, cudaHostAllocPortable));
+    capacity_ = bytes;
+    return data_;
+  }
+
+ private:
+  std::uint8_t* data_{};
+  std::size_t capacity_{};
+};
 
 int profile_for_batch(int batch) {
   switch (batch) { case 1: return 0; case 2: return 1; case 4: return 2; case 8: return 3; }
@@ -49,6 +76,7 @@ int profile_for_batch(int batch) {
 }  // namespace
 
 struct Tracker::Impl {
+  using Clock = std::chrono::steady_clock;
   struct FrameState {
     DeviceTensor memory;
     DeviceTensor memory_position;
@@ -67,10 +95,17 @@ struct Tracker::Impl {
   Engine box_prompt;
   Engine track;
   cudaStream_t stream{};
+  cudaEvent_t gpu_start{};
+  cudaEvent_t encoder_end{};
+  cudaEvent_t gpu_end{};
   int maximum_objects;
   int next_id{1};
   int frame_index{0};
   std::vector<ObjectState> objects;
+  std::array<PinnedBytes, 2> input_staging;
+  std::array<PinnedBytes, 8> mask_staging;
+  std::size_t input_staging_index{};
+  TrackerTimings timings;
   std::mutex mutex;
 
   Impl(const std::string& root, const std::string& precision, int maximum)
@@ -81,17 +116,42 @@ struct Tracker::Impl {
         maximum_objects(maximum) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
     check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    check_cuda(cudaEventCreate(&gpu_start));
+    check_cuda(cudaEventCreate(&encoder_end));
+    check_cuda(cudaEventCreate(&gpu_end));
+    int device = 0;
+    check_cuda(cudaGetDevice(&device));
+    cudaMemPool_t pool{};
+    check_cuda(cudaDeviceGetDefaultMemPool(&pool, device));
+    std::uint64_t threshold = std::numeric_limits<std::uint64_t>::max();
+    check_cuda(cudaMemPoolSetAttribute(
+        pool, cudaMemPoolAttrReleaseThreshold, &threshold));
   }
 
-  ~Impl() { cudaStreamDestroy(stream); }
+  ~Impl() {
+    objects.clear();
+    cudaStreamSynchronize(stream);
+    cudaEventDestroy(gpu_end);
+    cudaEventDestroy(encoder_end);
+    cudaEventDestroy(gpu_start);
+    cudaStreamDestroy(stream);
+  }
 
   std::map<std::string, DeviceTensor> encode(
       const std::uint8_t* host_image, int width, int height, std::size_t stride) {
-    auto device_image = allocate_tensor({height, static_cast<int64_t>(stride)}, nvinfer1::DataType::kUINT8);
-    check_cuda(cudaMemcpy2DAsync(device_image.data, stride, host_image, stride, stride, height,
+    const std::size_t input_bytes = stride * static_cast<std::size_t>(height);
+    auto* pinned = input_staging[input_staging_index++ % input_staging.size()].ensure(
+        input_bytes);
+    const auto copy_start = Clock::now();
+    std::memcpy(pinned, host_image, input_bytes);
+    timings.host_input_copy_ms += std::chrono::duration<double, std::milli>(
+        Clock::now() - copy_start).count();
+    auto device_image = allocate_tensor(
+        {height, static_cast<int64_t>(stride)}, nvinfer1::DataType::kUINT8, stream);
+    check_cuda(cudaMemcpy2DAsync(device_image.data, stride, pinned, stride, stride, height,
                                  cudaMemcpyHostToDevice, stream));
     const auto dtype = encoder.tensor_dtype("image");
-    auto normalized = allocate_tensor({1, 3, 1024, 1024}, dtype);
+    auto normalized = allocate_tensor({1, 3, 1024, 1024}, dtype, stream);
     launch_preprocess_rgb8(static_cast<const std::uint8_t*>(device_image.data), width, height,
                            stride, normalized.data, dtype, stream);
     return encoder.run({{"image", normalized}}, 0, stream);
@@ -107,7 +167,8 @@ struct Tracker::Impl {
   }
 
   DeviceTensor device_from_i64(const std::vector<int64_t>& values, std::vector<int64_t> shape) {
-    auto tensor = allocate_tensor(std::move(shape), nvinfer1::DataType::kINT64);
+    auto tensor = allocate_tensor(
+        std::move(shape), nvinfer1::DataType::kINT64, stream);
     check_cuda(cudaMemcpyAsync(tensor.data, values.data(), tensor.bytes, cudaMemcpyHostToDevice, stream));
     return tensor;
   }
@@ -131,15 +192,29 @@ struct Tracker::Impl {
     result.reserve(group.size());
     const std::size_t per_batch = logits.bytes / static_cast<std::size_t>(logits.shape.front());
     for (std::size_t index = 0; index < group.size(); ++index) {
-      auto mono = allocate_tensor({height, width}, nvinfer1::DataType::kUINT8);
+      auto mono = allocate_tensor(
+          {height, width}, nvinfer1::DataType::kUINT8, stream);
       launch_mask_to_mono8(static_cast<const std::byte*>(logits.data) + index * per_batch,
                            logits.dtype, 1024, 1024, static_cast<std::uint8_t*>(mono.data),
                            width, height, stream);
       ObjectMask mask{group[index]->id, width, height, std::vector<std::uint8_t>(width * height)};
-      check_cuda(cudaMemcpyAsync(mask.mono8.data(), mono.data, mono.bytes, cudaMemcpyDeviceToHost, stream));
+      auto* pinned = mask_staging.at(
+          static_cast<std::size_t>(group[index]->id - 1)).ensure(mono.bytes);
+      check_cuda(cudaMemcpyAsync(
+          pinned, mono.data, mono.bytes, cudaMemcpyDeviceToHost, stream));
       result.push_back(std::move(mask));
     }
     check_cuda(cudaStreamSynchronize(stream));
+    const auto copy_start = Clock::now();
+    for (std::size_t index = 0; index < group.size(); ++index) {
+      const auto* pinned = mask_staging.at(
+          static_cast<std::size_t>(group[index]->id - 1)).ensure(
+          result[index].mono8.size());
+      std::memcpy(
+          result[index].mono8.data(), pinned, result[index].mono8.size());
+    }
+    timings.host_mask_copy_ms += std::chrono::duration<double, std::milli>(
+        Clock::now() - copy_start).count();
     return result;
   }
 
@@ -167,13 +242,17 @@ struct Tracker::Impl {
         host_labels[row * 2] = 2; host_labels[row * 2 + 1] = 3;
       }
     }
-    auto float_staging = allocate_tensor({static_cast<int64_t>(host_coords.size())}, nvinfer1::DataType::kFLOAT);
+    auto float_staging = allocate_tensor(
+        {static_cast<int64_t>(host_coords.size())},
+        nvinfer1::DataType::kFLOAT,
+        stream);
     check_cuda(cudaMemcpyAsync(float_staging.data, host_coords.data(), float_staging.bytes,
                                cudaMemcpyHostToDevice, stream));
-    auto coords = allocate_tensor({batch, prompt_count, 2}, dtype);
+    auto coords = allocate_tensor({batch, prompt_count, 2}, dtype, stream);
     launch_float_conversion(static_cast<const float*>(float_staging.data), coords.data, dtype,
                             host_coords.size(), stream);
-    auto labels = allocate_tensor({batch, prompt_count}, nvinfer1::DataType::kINT32);
+    auto labels = allocate_tensor(
+        {batch, prompt_count}, nvinfer1::DataType::kINT32, stream);
     check_cuda(cudaMemcpyAsync(labels.data, host_labels.data(), labels.bytes, cudaMemcpyHostToDevice, stream));
     inputs["point_coords"] = std::move(coords);
     inputs["point_labels"] = std::move(labels);
@@ -195,9 +274,12 @@ struct Tracker::Impl {
     auto inputs = common_features(encoded, batch);
     inputs["image_position"] = repeat_batch(encoded.at("image_position"), batch, stream);
     const auto dtype = track.tensor_dtype("mask_memory");
-    auto memory = allocate_tensor({memories, 4096, batch, 64}, dtype);
-    auto memory_position = allocate_tensor({memories, 4096, batch, 64}, dtype);
-    auto object_pointers = allocate_tensor({pointers, batch, 256}, dtype);
+    auto memory = allocate_tensor(
+        {memories, 4096, batch, 64}, dtype, stream);
+    auto memory_position = allocate_tensor(
+        {memories, 4096, batch, 64}, dtype, stream);
+    auto object_pointers = allocate_tensor(
+        {pointers, batch, 256}, dtype, stream);
     std::vector<int64_t> temporal(memories * batch);
     std::vector<int64_t> distance(pointers * batch);
     for (int row = 0; row < batch; ++row) {
@@ -242,7 +324,11 @@ struct Tracker::Impl {
 
   std::vector<ObjectMask> process(const std::uint8_t* image, int width, int height, std::size_t stride) {
     std::lock_guard lock(mutex);
+    timings = {};
+    const auto total_start = Clock::now();
+    check_cuda(cudaEventRecord(gpu_start, stream));
     auto encoded = encode(image, width, height, stride);
+    check_cuda(cudaEventRecord(encoder_end, stream));
     std::vector<ObjectMask> masks;
     for (int prompt_count : {1, 2}) {
       std::vector<ObjectState*> group;
@@ -278,6 +364,19 @@ struct Tracker::Impl {
         masks.insert(masks.end(), std::make_move_iterator(output.begin()), std::make_move_iterator(output.end()));
       }
     }
+    check_cuda(cudaEventRecord(gpu_end, stream));
+    check_cuda(cudaEventSynchronize(gpu_end));
+    float encoder_ms = 0.0f;
+    float tail_ms = 0.0f;
+    float total_gpu_ms = 0.0f;
+    check_cuda(cudaEventElapsedTime(&encoder_ms, gpu_start, encoder_end));
+    check_cuda(cudaEventElapsedTime(&tail_ms, encoder_end, gpu_end));
+    check_cuda(cudaEventElapsedTime(&total_gpu_ms, gpu_start, gpu_end));
+    timings.encoder_gpu_ms = encoder_ms;
+    timings.tail_gpu_ms = tail_ms;
+    timings.gpu_total_ms = total_gpu_ms;
+    timings.total_ms = std::chrono::duration<double, std::milli>(
+        Clock::now() - total_start).count();
     ++frame_index;
     return masks;
   }
@@ -308,6 +407,11 @@ std::vector<ObjectMask> Tracker::process_rgb8(
   if (!image || width < 1 || height < 1 || stride < static_cast<std::size_t>(width * 3))
     throw std::invalid_argument("invalid RGB8 frame");
   return impl_->process(image, width, height, stride);
+}
+
+TrackerTimings Tracker::last_timings() const {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->timings;
 }
 
 }  // namespace sam2_trt

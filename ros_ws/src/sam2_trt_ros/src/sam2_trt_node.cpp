@@ -7,6 +7,7 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include <array>
 #include <condition_variable>
 #include <atomic>
 #include <chrono>
@@ -32,6 +33,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
     const auto max_objects = declare_parameter("max_objects", 8);
     const auto trace_path = declare_parameter("trace_path", "");
+    const auto preview_width = declare_parameter("preview_width", 960);
+    const auto preview_height = declare_parameter("preview_height", 540);
     declare_parameter("queue_policy", "latest");
     declare_parameter("enable_overlay", false);
     if (bundle.empty()) throw std::invalid_argument("bundle_dir parameter is required");
@@ -44,8 +47,17 @@ class Sam2TrtNode final : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "Writing runtime trace to %s", trace_path.c_str());
     }
 
-    mask_publisher_ = create_publisher<sensor_msgs::msg::Image>("/segmentation_mask", 1);
-    object_mask_publisher_ = create_publisher<sensor_msgs::msg::Image>("/sam/object_masks", 8);
+    if (preview_width < 1 || preview_height < 1)
+      throw std::invalid_argument("preview dimensions must be positive");
+    preview_width_ = preview_width;
+    preview_height_ = preview_height;
+    const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
+    mask_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+        "/segmentation_mask", image_qos);
+    object_mask_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+        "/sam/object_masks", image_qos);
+    preview_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+        "/sam/preview", image_qos);
     result_publisher_ = create_publisher<std_msgs::msg::String>("/sam/result_json", 10);
     subscription_ = create_subscription<sensor_msgs::msg::Image>(
         image_topic, rclcpp::SensorDataQoS().keep_last(1),
@@ -100,6 +112,61 @@ class Sam2TrtNode final : public rclcpp::Node {
     return std::chrono::duration<double, std::milli>(duration).count();
   }
 
+  sensor_msgs::msg::Image make_preview(
+      const sensor_msgs::msg::Image& frame,
+      const std::vector<sam2_trt::ObjectMask>& masks) const {
+    static constexpr std::array<std::array<std::uint8_t, 3>, 4> colors{{
+        {{0, 255, 0}},
+        {{255, 128, 0}},
+        {{0, 128, 255}},
+        {{255, 0, 255}},
+    }};
+    sensor_msgs::msg::Image preview;
+    preview.header = frame.header;
+    preview.height = static_cast<std::uint32_t>(preview_height_);
+    preview.width = static_cast<std::uint32_t>(preview_width_);
+    preview.encoding = sensor_msgs::image_encodings::RGB8;
+    preview.is_bigendian = false;
+    preview.step = static_cast<std::uint32_t>(preview_width_ * 3);
+    preview.data.resize(
+        static_cast<std::size_t>(preview.step) * preview.height);
+    const bool input_rgb = frame.encoding == sensor_msgs::image_encodings::RGB8;
+    for (int y = 0; y < preview_height_; ++y) {
+      const int source_y = std::min(
+          static_cast<int>(frame.height) - 1,
+          y * static_cast<int>(frame.height) / preview_height_);
+      for (int x = 0; x < preview_width_; ++x) {
+        const int source_x = std::min(
+            static_cast<int>(frame.width) - 1,
+            x * static_cast<int>(frame.width) / preview_width_);
+        const auto source_offset =
+            static_cast<std::size_t>(source_y) * frame.step + source_x * 3;
+        const auto output_offset =
+            (static_cast<std::size_t>(y) * preview_width_ + x) * 3;
+        for (int channel = 0; channel < 3; ++channel) {
+          const int source_channel = input_rgb ? channel : 2 - channel;
+          preview.data[output_offset + channel] =
+              frame.data[source_offset + source_channel];
+        }
+        for (std::size_t index = 0; index < masks.size(); ++index) {
+          const auto& mask = masks[index];
+          const auto mask_x = std::min(mask.width - 1, source_x);
+          const auto mask_y = std::min(mask.height - 1, source_y);
+          if (mask.mono8[static_cast<std::size_t>(mask_y) * mask.width + mask_x] == 0)
+            continue;
+          const auto& color = colors[
+              static_cast<std::size_t>(mask.object_id - 1) % colors.size()];
+          for (int channel = 0; channel < 3; ++channel) {
+            preview.data[output_offset + channel] = static_cast<std::uint8_t>(
+                preview.data[output_offset + channel] * 0.55f +
+                color[channel] * 0.45f);
+          }
+        }
+      }
+    }
+    return preview;
+  }
+
   void worker(std::stop_token token) {
     while (!token.stop_requested()) {
       std::optional<PendingFrame> pending;
@@ -148,9 +215,15 @@ class Sam2TrtNode final : public rclcpp::Node {
       std::lock_guard lock(tracker_mutex_);
       masks = tracker_->process_rgb8(rgb, frame->width, frame->height, stride);
     }
+    const auto tracker_timings = tracker_->last_timings();
     const auto inference_end = SteadyClock::now();
     const auto mask_publish_start = inference_end;
-    for (std::size_t index = 0; index < masks.size(); ++index) {
+    const bool publish_legacy_mask = mask_publisher_->get_subscription_count() > 0;
+    const bool publish_object_masks =
+        object_mask_publisher_->get_subscription_count() > 0;
+    for (std::size_t index = 0;
+         index < masks.size() && (publish_legacy_mask || publish_object_masks);
+         ++index) {
       sensor_msgs::msg::Image message;
       message.header = frame->header;
       message.header.frame_id += "/sam_object_" + std::to_string(masks[index].object_id);
@@ -159,9 +232,16 @@ class Sam2TrtNode final : public rclcpp::Node {
       message.encoding = sensor_msgs::image_encodings::MONO8;
       message.is_bigendian = false;
       message.step = masks[index].width;
-      message.data = std::move(masks[index].mono8);
-      if (index == 0) mask_publisher_->publish(message);
-      object_mask_publisher_->publish(std::move(message));
+      message.data = masks[index].mono8;
+      if (index == 0 && publish_legacy_mask) mask_publisher_->publish(message);
+      if (publish_object_masks) object_mask_publisher_->publish(std::move(message));
+    }
+    double preview_compose_ms = 0.0;
+    if (preview_publisher_->get_subscription_count() > 0) {
+      const auto preview_start = SteadyClock::now();
+      auto preview = make_preview(*frame, masks);
+      preview_compose_ms = milliseconds(SteadyClock::now() - preview_start);
+      preview_publisher_->publish(std::move(preview));
     }
     const auto metrics_time = SteadyClock::now();
     const double callback_total_ms = milliseconds(metrics_time - pending.arrival);
@@ -175,6 +255,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     json << std::fixed << std::setprecision(3);
     json << "{\"stamp_ns\":" << rclcpp::Time(frame->header.stamp).nanoseconds()
          << ",\"frame_index\":" << processed_frames_++
+         << ",\"source_width\":" << frame->width
+         << ",\"source_height\":" << frame->height
          << ",\"objects\":[";
     for (std::size_t index = 0; index < masks.size(); ++index) {
       if (index) json << ',';
@@ -183,7 +265,14 @@ class Sam2TrtNode final : public rclcpp::Node {
     json << "],\"queue_wait_ms\":" << queue_wait_ms
          << ",\"color_convert_ms\":" << milliseconds(color_end - color_start)
          << ",\"inference_ms\":" << milliseconds(inference_end - inference_start)
+         << ",\"host_input_copy_ms\":" << tracker_timings.host_input_copy_ms
+         << ",\"encoder_gpu_ms\":" << tracker_timings.encoder_gpu_ms
+         << ",\"tail_gpu_ms\":" << tracker_timings.tail_gpu_ms
+         << ",\"gpu_total_ms\":" << tracker_timings.gpu_total_ms
+         << ",\"host_mask_copy_ms\":" << tracker_timings.host_mask_copy_ms
+         << ",\"tracker_total_ms\":" << tracker_timings.total_ms
          << ",\"mask_publish_ms\":" << milliseconds(metrics_time - mask_publish_start)
+         << ",\"preview_compose_ms\":" << preview_compose_ms
          << ",\"callback_total_ms\":" << callback_total_ms
          << ",\"worker_total_ms\":" << worker_total_ms
          << ",\"frame_interval_ms\":" << frame_interval_ms
@@ -215,6 +304,7 @@ class Sam2TrtNode final : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mask_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr object_mask_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr result_publisher_;
   rclcpp::Service<sam2_trt_msgs::srv::AddObject>::SharedPtr add_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
@@ -226,6 +316,8 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::uint64_t last_reported_dropped_frames_{0};
   std::uint64_t processed_frames_{0};
   std::optional<SteadyClock::time_point> previous_worker_start_;
+  int preview_width_{};
+  int preview_height_{};
   std::ofstream trace_;
   std::jthread worker_;
 };

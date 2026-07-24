@@ -20,6 +20,8 @@ def generate_launch_description():
             DeclareLaunchArgument("display_max_width", default_value="1280"),
             DeclareLaunchArgument("replace_on_prompt", default_value="true"),
             DeclareLaunchArgument("draw_contours", default_value="false"),
+            DeclareLaunchArgument("preview_width", default_value="960"),
+            DeclareLaunchArgument("preview_height", default_value="540"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution(
@@ -42,6 +44,12 @@ def generate_launch_description():
                             LaunchConfiguration("max_objects"), value_type=int
                         ),
                         "trace_path": LaunchConfiguration("trace_path"),
+                        "preview_width": ParameterValue(
+                            LaunchConfiguration("preview_width"), value_type=int
+                        ),
+                        "preview_height": ParameterValue(
+                            LaunchConfiguration("preview_height"), value_type=int
+                        ),
                         "enable_overlay": False,
                     }
                 ],
@@ -65,6 +73,7 @@ def generate_launch_description():
                         "draw_contours": ParameterValue(
                             LaunchConfiguration("draw_contours"), value_type=bool
                         ),
+                        "use_preview": True,
                     }
                 ],
             ),
