@@ -1,7 +1,10 @@
+#include "sam2_trt_ros/sam2_trt_node.hpp"
+
 #include "sam2_trt/tracker.hpp"
 #include "sam2_trt_msgs/srv/add_object.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -26,7 +29,8 @@ class Sam2TrtNode final : public rclcpp::Node {
  public:
   using SteadyClock = std::chrono::steady_clock;
 
-  Sam2TrtNode() : Node("sam2_trt") {
+  explicit Sam2TrtNode(const rclcpp::NodeOptions& options)
+      : Node("sam2_trt", options) {
     declare_parameter("model_id", "sam2.1-hiera-large");
     const auto bundle = declare_parameter("bundle_dir", "");
     const auto precision = declare_parameter("precision", "fp32");
@@ -363,9 +367,9 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::jthread worker_;
 };
 
-int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<Sam2TrtNode>());
-  rclcpp::shutdown();
-  return 0;
+std::shared_ptr<rclcpp::Node> make_sam2_trt_node(
+    const rclcpp::NodeOptions& options) {
+  return std::make_shared<Sam2TrtNode>(options);
 }
+
+RCLCPP_COMPONENTS_REGISTER_NODE(Sam2TrtNode)
