@@ -265,8 +265,9 @@ struct Tracker::Impl {
       buckets[{selected.memories.size(), selected.pointers.size()}].push_back({&object, std::move(selected)});
     }
     for (auto& [key, entries] : buckets) {
-      for (std::size_t begin = 0; begin < entries.size(); begin += 4) {
-        const std::size_t end = std::min(begin + 4, entries.size());
+      // Thor track batch 2/4 is slower than issuing the same objects as batch 1.
+      for (std::size_t begin = 0; begin < entries.size(); ++begin) {
+        const std::size_t end = begin + 1;
         std::vector<ObjectState*> group;
         std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
         for (std::size_t index = begin; index < end; ++index) {
