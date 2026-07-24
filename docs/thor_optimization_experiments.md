@@ -257,6 +257,68 @@ preprocessing, state construction, allocations, mask conversion, and
 synchronization. The viewer can be launched with `replace_on_prompt:=false`
 to accumulate up to eight objects while retaining same-stamp mask commit.
 
+## Same-checkpoint PyTorch versus TensorRT camera A/B
+
+On 2026-07-24, the native ROS baseline and TensorRT node were run headless on
+the same Thor, RealSense 1280x720 RGB8 30 FPS stream, queue depth 1, center
+point prompt, and one object. The native node used a 32-frame retained-history
+cap; both paths use SAM2's standard seven-slot memory selection. Each
+statistic uses 100 steady tracking frames. Both native checkpoint names hash
+to the exact encoder checkpoint used by the TensorRT bundle:
+
+```text
+cd442f19b67be084305ead07908a21a911d25c3980f5f67e4b568db4d88878cf
+```
+
+| Pipeline | Measured FPS | Model/pipeline mean (ms) | p50 / p90 / p99 (ms) | Source-to-result mean (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Native PyTorch FP32 | 3.840 | 177.542 | 177.443 / 177.938 / 179.027 | 312.423 |
+| TensorRT FP16 | 26.505 | 34.080 | 33.961 / 35.043 / 35.672 | 80.990 |
+
+TensorRT therefore delivered `6.90x` the camera-pipeline throughput, a `590.2%`
+FPS increase. Its measured model/pipeline latency was `5.21x` faster, or
+`80.8%` lower. This latency comparison is conservative: native
+`latency_ms` brackets the PyTorch online model step but excludes frame
+preprocessing and publishing, while TensorRT `inference_ms` includes host to
+device transfer, preprocessing, all engines, state/mask conversion, and
+synchronization. Throughput is computed from the 100 processed source stamps,
+not an average of instantaneous FPS.
+
+The native rows are retained only on Thor under
+`results/thor/ab_tv5_native/native_100.jsonl`; TensorRT rows are under
+`results/thor/ab_tv5_trt/trt_100.jsonl`. They are generated results and remain
+untracked.
+
+## Viewer motion/FPS diagnosis and optimization
+
+Commit `d25b2af` split the previously ambiguous viewer `output FPS` into
+tracker, UI receive, and unique-overlay present rates, and added compose and
+display timing. With the original NumPy per-pixel alpha blend, a one-object
+viewer run averaged 21.50 ms just for mask composition and 4.92 ms for
+display. This was enough to make the visible frame rate lower than the model
+result rate even though TensorRT latency did not change with scene motion.
+
+Commits `3b6f096` and `f1b2558` moved alpha blending into OpenCV and limited it
+to the mask bounding rectangle:
+
+| Viewer implementation | Mean compose (ms) | Mean display (ms) |
+| --- | ---: | ---: |
+| NumPy selected-pixel blend | 21.504 | 4.916 |
+| OpenCV full-frame masked blend | 8.551 | 5.211 |
+| OpenCV mask-region blend | 3.799 | 5.236 |
+
+The final mask composition is `82.3%` lower than the original. It changes only
+visualization; engine outputs and mask accuracy are unchanged. Contour drawing
+is now optional and off by default.
+
+The remaining display-on run measured 20.51 FPS and 37.61 ms mean TensorRT
+inference over 200 frames, versus the 26.51 FPS and 34.08 ms headless run.
+During the same period, `/camera/camera/color/image_raw` had rolling rates of
+about 16.7--23.2 FPS with 134--300 ms maximum gaps. Therefore residual visible
+stutter is a combination of irregular RealSense delivery and the CPU/memory
+cost of copying, compositing, and presenting ROS images; it is not caused by
+motion making the TensorRT graph substantially slower.
+
 Artifacts remain ignored under:
 
 ```text
@@ -265,6 +327,8 @@ results/thor/tv5_fp16_aux0/prompt_parity/
 results/thor/tv5_fp16_aux0/box_parity/
 results/thor/tv5_fp16_aux0/realsense_usb2_box_metrics_v2/
 results/thor/tv5_fp16_aux0/realsense_metric_fix_8fc2769/
+results/thor/ab_tv5_native/
+results/thor/ab_tv5_trt/
 ```
 
 ## Planned precision ablations

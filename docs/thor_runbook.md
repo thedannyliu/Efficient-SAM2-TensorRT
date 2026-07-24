@@ -139,6 +139,17 @@ the C++ TensorRT trace remains the latency source of truth. A new prompt
 replaces the current object by default; use `replace_on_prompt:=false` only
 for intentional multi-object accumulation. The viewer waits for every mask
 listed by the same-stamp result before swapping the displayed overlay.
+The overlay separates three rates:
+
+- `tracker`: result rate computed from source frame stamps;
+- `UI-rx`: result callback arrival rate in the Python viewer;
+- `present`: rate at which a new completed overlay is actually shown.
+
+`compose` is mask blending time and `display` is the OpenCV present path. These
+numbers make a display bottleneck visible without confusing it with
+`inference_ms`. Contour drawing is disabled by default because it does not
+change the model mask and adds CPU work; enable it only when needed with
+`draw_contours:=true`.
 
 ## 5. Performance acceptance
 
