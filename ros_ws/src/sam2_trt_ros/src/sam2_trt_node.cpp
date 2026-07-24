@@ -60,7 +60,8 @@ class Sam2TrtNode final : public rclcpp::Node {
         });
     add_service_ = create_service<sam2_trt_msgs::srv::AddObject>(
         "/sam/add_object",
-        [this](const auto request, auto response) {
+        [this](sam2_trt_msgs::srv::AddObject::Request::SharedPtr request,
+               sam2_trt_msgs::srv::AddObject::Response::SharedPtr response) {
           try {
             sam2_trt::Prompt prompt;
             prompt.kind = request->kind == sam2_trt_msgs::srv::AddObject::Request::BOX
@@ -76,7 +77,8 @@ class Sam2TrtNode final : public rclcpp::Node {
           }
         });
     reset_service_ = create_service<std_srvs::srv::Trigger>(
-        "/sam/reset", [this](const auto, auto response) {
+        "/sam/reset", [this](std_srvs::srv::Trigger::Request::SharedPtr,
+                            std_srvs::srv::Trigger::Response::SharedPtr response) {
           std::lock_guard lock(tracker_mutex_);
           tracker_->reset(); response->success = true;
         });
