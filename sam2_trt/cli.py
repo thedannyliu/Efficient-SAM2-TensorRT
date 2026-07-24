@@ -14,6 +14,7 @@ from .probe import write_probe
 from .validate import accuracy_gate, write_gate_result
 from .trt_benchmark import benchmark_engine, write_engine_benchmark
 from .pytorch_benchmark import benchmark_pytorch_graphs, write_pytorch_graph_benchmark
+from .prompt_parity import compare_prompt_masks
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -88,6 +89,26 @@ def _parser() -> argparse.ArgumentParser:
     pytorch_graphs.add_argument("--runs", type=int, default=100)
     pytorch_graphs.add_argument("--tf32", action="store_true")
     pytorch_graphs.add_argument("--output", required=True)
+
+    prompt_parity = subparsers.add_parser(
+        "compare-prompt", help="compare PyTorch and TensorRT masks on video frames"
+    )
+    prompt_parity.add_argument("--model-id", required=True)
+    prompt_parity.add_argument("--checkpoint")
+    prompt_parity.add_argument("--downstream-checkpoint")
+    prompt_parity.add_argument("--registry")
+    prompt_parity.add_argument("--sam2-root", required=True)
+    prompt_parity.add_argument("--distill-root")
+    prompt_parity.add_argument("--bundle-dir", required=True)
+    prompt_parity.add_argument(
+        "--precision", choices=("fp32", "tf32", "fp16", "bf16"), required=True
+    )
+    prompt_parity.add_argument("--video", action="append", required=True)
+    prompt_parity.add_argument("--frame-index", action="append", type=int, required=True)
+    prompt = prompt_parity.add_mutually_exclusive_group(required=True)
+    prompt.add_argument("--point", nargs=2, type=float, metavar=("X", "Y"))
+    prompt.add_argument("--box", nargs=4, type=float, metavar=("X0", "Y0", "X1", "Y1"))
+    prompt_parity.add_argument("--output-dir", required=True)
 
     verify = subparsers.add_parser("verify-bundle", help="verify checkpoint and engine hashes")
     verify.add_argument("--bundle-dir", required=True)
@@ -181,6 +202,27 @@ def main(argv: list[str] | None = None) -> int:
             allow_tf32=args.tf32,
         )
         write_pytorch_graph_benchmark(result, args.output)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "compare-prompt":
+        spec = resolve_model(
+            args.model_id,
+            registry_path=args.registry,
+            checkpoint=args.checkpoint,
+            downstream_checkpoint=args.downstream_checkpoint,
+        )
+        result = compare_prompt_masks(
+            spec,
+            sam2_root=args.sam2_root,
+            distill_root=args.distill_root,
+            bundle_dir=args.bundle_dir,
+            precision=args.precision,
+            videos=args.video,
+            frame_indices=args.frame_index,
+            point=tuple(args.point) if args.point else None,
+            box=tuple(args.box) if args.box else None,
+            output_dir=args.output_dir,
+        )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     if args.command == "verify-bundle":
