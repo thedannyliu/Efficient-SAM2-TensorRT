@@ -37,6 +37,7 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
     const auto max_objects = declare_parameter("max_objects", 8);
     const auto track_concurrency = declare_parameter("track_concurrency", max_objects);
+    pipeline_overlap_ = declare_parameter("pipeline_overlap", true);
     const auto trace_path = declare_parameter("trace_path", "");
     const auto preview_width = declare_parameter("preview_width", 640);
     const auto preview_height = declare_parameter("preview_height", 360);
@@ -98,7 +99,9 @@ class Sam2TrtNode final : public rclcpp::Node {
         "/sam/reset", [this](std_srvs::srv::Trigger::Request::SharedPtr,
                             std_srvs::srv::Trigger::Response::SharedPtr response) {
           std::lock_guard lock(tracker_mutex_);
-          tracker_->reset(); response->success = true;
+          tracker_->reset();
+          pipeline_pending_.reset();
+          response->success = true;
         });
     preview_worker_ = std::jthread(
         [this](std::stop_token token) { preview_worker(token); });
@@ -230,7 +233,7 @@ class Sam2TrtNode final : public rclcpp::Node {
   }
 
   void process(PendingFrame pending) {
-    const auto& frame = pending.message;
+    const auto& input_frame = pending.message;
     const auto worker_start = SteadyClock::now();
     const double queue_wait_ms = milliseconds(worker_start - pending.arrival);
     double frame_interval_ms = 0.0;
@@ -238,28 +241,49 @@ class Sam2TrtNode final : public rclcpp::Node {
     previous_worker_start_ = worker_start;
 
     const auto color_start = SteadyClock::now();
-    const std::uint8_t* rgb = frame->data.data();
+    const std::uint8_t* rgb = input_frame->data.data();
     std::vector<std::uint8_t> converted;
-    std::size_t stride = frame->step;
-    if (frame->encoding == sensor_msgs::image_encodings::BGR8) {
-      converted.resize(static_cast<std::size_t>(frame->width) * frame->height * 3);
-      for (std::size_t y = 0; y < frame->height; ++y)
-        for (std::size_t x = 0; x < frame->width; ++x)
+    std::size_t stride = input_frame->step;
+    if (input_frame->encoding == sensor_msgs::image_encodings::BGR8) {
+      converted.resize(
+          static_cast<std::size_t>(input_frame->width) *
+          input_frame->height * 3);
+      for (std::size_t y = 0; y < input_frame->height; ++y)
+        for (std::size_t x = 0; x < input_frame->width; ++x)
           for (int channel = 0; channel < 3; ++channel)
-            converted[(y * frame->width + x) * 3 + channel] =
-                frame->data[y * frame->step + x * 3 + (2 - channel)];
+            converted[(y * input_frame->width + x) * 3 + channel] =
+                input_frame->data[
+                    y * input_frame->step + x * 3 + (2 - channel)];
       rgb = converted.data();
-      stride = static_cast<std::size_t>(frame->width) * 3;
-    } else if (frame->encoding != sensor_msgs::image_encodings::RGB8) {
+      stride = static_cast<std::size_t>(input_frame->width) * 3;
+    } else if (input_frame->encoding != sensor_msgs::image_encodings::RGB8) {
       throw std::invalid_argument("camera image must use rgb8 or bgr8 encoding");
     }
     const auto color_end = SteadyClock::now();
     const auto inference_start = color_end;
     std::vector<sam2_trt::ObjectMask> masks;
+    PendingFrame output_pending;
     {
       std::lock_guard lock(tracker_mutex_);
-      masks = tracker_->process_rgb8(rgb, frame->width, frame->height, stride);
+      if (pipeline_overlap_) {
+        auto result = tracker_->process_pipelined_rgb8(
+            rgb, input_frame->width, input_frame->height, stride);
+        if (!result) {
+          pipeline_pending_ = std::move(pending);
+          return;
+        }
+        if (!pipeline_pending_)
+          throw std::runtime_error("pipelined tracker lost its source frame");
+        masks = std::move(*result);
+        output_pending = std::move(*pipeline_pending_);
+        pipeline_pending_ = std::move(pending);
+      } else {
+        masks = tracker_->process_rgb8(
+            rgb, input_frame->width, input_frame->height, stride);
+        output_pending = std::move(pending);
+      }
     }
+    const auto& frame = output_pending.message;
     const auto tracker_timings = tracker_->last_timings();
     const auto inference_end = SteadyClock::now();
     const auto mask_publish_start = inference_end;
@@ -282,7 +306,8 @@ class Sam2TrtNode final : public rclcpp::Node {
       if (publish_object_masks) object_mask_publisher_->publish(std::move(message));
     }
     const auto metrics_time = SteadyClock::now();
-    const double callback_total_ms = milliseconds(metrics_time - pending.arrival);
+    const double callback_total_ms = milliseconds(
+        metrics_time - output_pending.arrival);
     const double worker_total_ms = milliseconds(metrics_time - worker_start);
     const auto dropped_total = dropped_frames_.load();
     const auto dropped = dropped_total - last_reported_dropped_frames_;
@@ -301,6 +326,9 @@ class Sam2TrtNode final : public rclcpp::Node {
       json << masks[index].object_id;
     }
     json << "],\"queue_wait_ms\":" << queue_wait_ms
+         << ",\"pipeline_overlap\":"
+         << (pipeline_overlap_ ? "true" : "false")
+         << ",\"pipeline_delay_frames\":" << (pipeline_overlap_ ? 1 : 0)
          << ",\"color_convert_ms\":" << milliseconds(color_end - color_start)
          << ",\"inference_ms\":" << milliseconds(inference_end - inference_start)
          << ",\"host_input_copy_ms\":" << tracker_timings.host_input_copy_ms
@@ -355,6 +383,7 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::condition_variable_any frame_ready_;
   std::condition_variable_any preview_ready_;
   std::optional<PendingFrame> latest_;
+  std::optional<PendingFrame> pipeline_pending_;
   std::optional<PreviewJob> latest_preview_;
   std::atomic<std::uint64_t> dropped_frames_{0};
   std::atomic<std::uint64_t> dropped_previews_{0};
@@ -364,6 +393,7 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::optional<SteadyClock::time_point> previous_worker_start_;
   int preview_width_{};
   int preview_height_{};
+  bool pipeline_overlap_{};
   std::ofstream trace_;
   std::jthread preview_worker_;
   std::jthread worker_;

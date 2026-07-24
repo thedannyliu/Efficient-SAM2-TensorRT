@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,9 @@ class Tracker {
   void reset();
   std::vector<ObjectMask> process_rgb8(
       const std::uint8_t* image, int width, int height, std::size_t row_stride);
+  std::optional<std::vector<ObjectMask>> process_pipelined_rgb8(
+      const std::uint8_t* image, int width, int height,
+      std::size_t row_stride);
   TrackerTimings last_timings() const;
 
  private:

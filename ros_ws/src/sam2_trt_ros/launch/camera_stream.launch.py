@@ -14,6 +14,7 @@ def generate_launch_description():
             DeclareLaunchArgument("image_topic", default_value="/camera/camera/color/image_raw"),
             DeclareLaunchArgument("max_objects", default_value="8"),
             DeclareLaunchArgument("track_concurrency", default_value="8"),
+            DeclareLaunchArgument("pipeline_overlap", default_value="true"),
             DeclareLaunchArgument("trace_path", default_value=""),
             DeclareLaunchArgument("preview_width", default_value="640"),
             DeclareLaunchArgument("preview_height", default_value="360"),
@@ -41,6 +42,10 @@ def generate_launch_description():
                                 "track_concurrency": ParameterValue(
                                     LaunchConfiguration("track_concurrency"),
                                     value_type=int,
+                                ),
+                                "pipeline_overlap": ParameterValue(
+                                    LaunchConfiguration("pipeline_overlap"),
+                                    value_type=bool,
                                 ),
                                 "trace_path": LaunchConfiguration("trace_path"),
                                 "preview_width": ParameterValue(

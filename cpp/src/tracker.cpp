@@ -112,19 +112,25 @@ struct Tracker::Impl {
     DeviceTensor temporal;
     DeviceTensor distance;
   };
+  struct EncodedFrame {
+    std::map<std::string, DeviceTensor> features;
+    int width;
+    int height;
+    std::size_t slot;
+  };
 
   Engine encoder;
   Engine point_prompt;
   Engine box_prompt;
   std::vector<std::unique_ptr<Engine>> track_engines;
-  std::map<std::string, DeviceTensor> encoder_outputs;
+  std::array<std::map<std::string, DeviceTensor>, 2> encoder_outputs;
   std::map<std::string, DeviceTensor> point_prompt_outputs;
   std::map<std::string, DeviceTensor> box_prompt_outputs;
   std::array<std::map<std::string, DeviceTensor>, 8> track_outputs;
   std::array<TrackScratch, 8> track_scratch;
   cudaStream_t stream{};
   std::array<cudaStream_t, 8> track_streams{};
-  cudaEvent_t encoded_ready{};
+  std::array<cudaEvent_t, 2> encoded_ready{};
   cudaEvent_t gpu_start{};
   cudaEvent_t encoder_end{};
   cudaEvent_t gpu_end{};
@@ -133,6 +139,7 @@ struct Tracker::Impl {
   int next_id{1};
   int frame_index{0};
   std::vector<ObjectState> objects;
+  std::optional<EncodedFrame> pipelined_frame;
   std::array<PinnedBytes, 2> input_staging;
   std::array<PinnedBytes, 8> mask_staging;
   std::size_t input_staging_index{};
@@ -152,7 +159,8 @@ struct Tracker::Impl {
     if (concurrency < 1 || concurrency > maximum)
       throw std::invalid_argument("track_concurrency must be in [1, max_objects]");
     check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    check_cuda(cudaEventCreateWithFlags(&encoded_ready, cudaEventDisableTiming));
+    for (auto& event : encoded_ready)
+      check_cuda(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
     const auto track_path =
         (std::filesystem::path(root) / ("track_step." + precision + ".engine")).string();
     track_engines.reserve(static_cast<std::size_t>(maximum));
@@ -189,7 +197,7 @@ struct Tracker::Impl {
 
   ~Impl() {
     objects.clear();
-    encoder_outputs.clear();
+    for (auto& output : encoder_outputs) output.clear();
     point_prompt_outputs.clear();
     box_prompt_outputs.clear();
     cudaStreamSynchronize(stream);
@@ -202,7 +210,7 @@ struct Tracker::Impl {
       cudaStreamDestroy(object_stream);
     }
     track_engines.clear();
-    cudaEventDestroy(encoded_ready);
+    for (auto event : encoded_ready) cudaEventDestroy(event);
     cudaEventDestroy(gpu_end);
     cudaEventDestroy(encoder_end);
     cudaEventDestroy(gpu_start);
@@ -210,7 +218,8 @@ struct Tracker::Impl {
   }
 
   std::map<std::string, DeviceTensor> encode(
-      const std::uint8_t* host_image, int width, int height, std::size_t stride) {
+      const std::uint8_t* host_image, int width, int height,
+      std::size_t stride, std::size_t slot) {
     const std::size_t input_bytes = stride * static_cast<std::size_t>(height);
     auto* pinned = input_staging[input_staging_index++ % input_staging.size()].ensure(
         input_bytes);
@@ -226,8 +235,9 @@ struct Tracker::Impl {
     auto normalized = allocate_tensor({1, 3, 1024, 1024}, dtype, stream);
     launch_preprocess_rgb8(static_cast<const std::uint8_t*>(device_image.data), width, height,
                            stride, normalized.data, dtype, stream);
-    encoder.run_into({{"image", normalized}}, 0, stream, encoder_outputs);
-    return encoder_outputs;
+    encoder.run_into(
+        {{"image", normalized}}, 0, stream, encoder_outputs.at(slot));
+    return encoder_outputs.at(slot);
   }
 
   std::map<std::string, DeviceTensor> common_features(
@@ -366,7 +376,7 @@ struct Tracker::Impl {
   std::vector<ObjectMask> run_track_group(
       const std::map<std::string, DeviceTensor>& encoded, std::vector<ObjectState*> group,
       const std::vector<SelectedState<std::shared_ptr<FrameState>>>& selections,
-      int width, int height) {
+      int width, int height, cudaEvent_t ready_event) {
     const auto slot = static_cast<std::size_t>(group.front()->id - 1);
     auto execution_stream = track_streams.at(slot);
     auto& track = *track_engines.at(slot);
@@ -438,7 +448,7 @@ struct Tracker::Impl {
     inputs["mask_temporal_position"] = std::move(temporal_tensor);
     inputs["object_pointers"] = object_pointers;
     inputs["pointer_frame_distance"] = std::move(distance_tensor);
-    check_cuda(cudaStreamWaitEvent(execution_stream, encoded_ready, 0));
+    check_cuda(cudaStreamWaitEvent(execution_stream, ready_event, 0));
     auto& output = track_outputs.at(slot);
     track.run_into(inputs, 0, execution_stream, output);
     for (std::size_t index = 0; index < group.size(); ++index)
@@ -448,14 +458,9 @@ struct Tracker::Impl {
         group, output, width, height, execution_stream);
   }
 
-  std::vector<ObjectMask> process(const std::uint8_t* image, int width, int height, std::size_t stride) {
-    std::lock_guard lock(mutex);
-    timings = {};
-    const auto total_start = Clock::now();
-    check_cuda(cudaEventRecord(gpu_start, stream));
-    auto encoded = encode(image, width, height, stride);
-    check_cuda(cudaEventRecord(encoder_end, stream));
-    check_cuda(cudaEventRecord(encoded_ready, stream));
+  std::vector<ObjectMask> process_encoded(
+      const std::map<std::string, DeviceTensor>& encoded, int width,
+      int height, cudaEvent_t ready_event) {
     std::vector<ObjectMask> masks;
     for (int prompt_count : {1, 2}) {
       std::vector<ObjectState*> group;
@@ -495,18 +500,23 @@ struct Tracker::Impl {
         track_futures.push_back(std::async(
             std::launch::async,
             [this, &encoded, object, selection = std::move(selection),
-             width, height]() mutable {
+             width, height, ready_event]() mutable {
               std::vector<ObjectState*> group{object};
               std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
               selections.push_back(std::move(selection));
               return run_track_group(
-                  encoded, std::move(group), selections, width, height);
+                  encoded, std::move(group), selections, width, height,
+                  ready_event);
             }));
         if (static_cast<int>(track_futures.size()) == track_concurrency)
           collect_futures();
       }
     }
     collect_futures();
+    return masks;
+  }
+
+  void finish_timings(Clock::time_point total_start) {
     check_cuda(cudaEventRecord(gpu_end, stream));
     check_cuda(cudaEventSynchronize(gpu_end));
     float encoder_ms = 0.0f;
@@ -520,6 +530,51 @@ struct Tracker::Impl {
     timings.gpu_total_ms = total_gpu_ms;
     timings.total_ms = std::chrono::duration<double, std::milli>(
         Clock::now() - total_start).count();
+  }
+
+  std::vector<ObjectMask> process(
+      const std::uint8_t* image, int width, int height,
+      std::size_t stride) {
+    std::lock_guard lock(mutex);
+    timings = {};
+    const auto total_start = Clock::now();
+    check_cuda(cudaEventRecord(gpu_start, stream));
+    auto encoded = encode(image, width, height, stride, 0);
+    check_cuda(cudaEventRecord(encoder_end, stream));
+    check_cuda(cudaEventRecord(encoded_ready[0], stream));
+    auto masks = process_encoded(
+        encoded, width, height, encoded_ready[0]);
+    finish_timings(total_start);
+    ++frame_index;
+    return masks;
+  }
+
+  std::optional<std::vector<ObjectMask>> process_pipelined(
+      const std::uint8_t* image, int width, int height,
+      std::size_t stride) {
+    std::lock_guard lock(mutex);
+    timings = {};
+    const auto total_start = Clock::now();
+    const std::size_t slot =
+        pipelined_frame ? pipelined_frame->slot ^ 1U : 0U;
+    check_cuda(cudaEventRecord(gpu_start, stream));
+    auto encoded = encode(image, width, height, stride, slot);
+    check_cuda(cudaEventRecord(encoder_end, stream));
+    check_cuda(cudaEventRecord(encoded_ready[slot], stream));
+    EncodedFrame current{
+        std::move(encoded), width, height, slot};
+    if (!pipelined_frame) {
+      check_cuda(cudaEventSynchronize(encoded_ready[slot]));
+      finish_timings(total_start);
+      pipelined_frame = std::move(current);
+      return std::nullopt;
+    }
+    auto previous = std::move(*pipelined_frame);
+    auto masks = process_encoded(
+        previous.features, previous.width, previous.height,
+        encoded_ready[previous.slot]);
+    finish_timings(total_start);
+    pipelined_frame = std::move(current);
     ++frame_index;
     return masks;
   }
@@ -544,6 +599,7 @@ int Tracker::add_object(const Prompt& prompt) {
 void Tracker::reset() {
   std::lock_guard lock(impl_->mutex);
   impl_->objects.clear();
+  impl_->pipelined_frame.reset();
   impl_->frame_index = 0;
   impl_->next_id = 1;
 }
@@ -553,6 +609,15 @@ std::vector<ObjectMask> Tracker::process_rgb8(
   if (!image || width < 1 || height < 1 || stride < static_cast<std::size_t>(width * 3))
     throw std::invalid_argument("invalid RGB8 frame");
   return impl_->process(image, width, height, stride);
+}
+
+std::optional<std::vector<ObjectMask>> Tracker::process_pipelined_rgb8(
+    const std::uint8_t* image, int width, int height,
+    std::size_t stride) {
+  if (!image || width < 1 || height < 1 ||
+      stride < static_cast<std::size_t>(width * 3))
+    throw std::invalid_argument("invalid RGB8 frame");
+  return impl_->process_pipelined(image, width, height, stride);
 }
 
 TrackerTimings Tracker::last_timings() const {
