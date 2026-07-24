@@ -67,6 +67,8 @@ class InteractiveViewer(Node):
         self.compose_ms = 0.0
         self.display_ms = 0.0
         self.last_metrics_log = perf_counter()
+        self.color_layers: dict[tuple[int, int, int], np.ndarray] = {}
+        self.blend_buffer: np.ndarray | None = None
         self.drag_start: tuple[float, float] | None = None
         self.drag_current: tuple[float, float] | None = None
         self.prompt_marker: tuple[str, tuple[float, ...], float] | None = None
@@ -150,17 +152,27 @@ class InteractiveViewer(Node):
         overlay = frame.copy()
         for object_id in expected:
             mask = available[object_id]
-            selected = mask > 0
-            color = np.asarray(_COLORS[(object_id - 1) % len(_COLORS)], dtype=np.float32)
-            overlay[selected] = (
-                overlay[selected].astype(np.float32) * 0.55 + color * 0.45
-            ).astype(np.uint8)
+            color_index = (object_id - 1) % len(_COLORS)
+            color = _COLORS[color_index]
+            height, width = overlay.shape[:2]
+            color_key = height, width, color_index
+            color_layer = self.color_layers.get(color_key)
+            if color_layer is None:
+                color_layer = np.empty_like(overlay)
+                color_layer[:] = color
+                self.color_layers[color_key] = color_layer
+            if self.blend_buffer is None or self.blend_buffer.shape != overlay.shape:
+                self.blend_buffer = np.empty_like(overlay)
+            cv2.addWeighted(
+                overlay, 0.55, color_layer, 0.45, 0.0, dst=self.blend_buffer
+            )
+            cv2.copyTo(self.blend_buffer, mask, overlay)
             if self.draw_contours:
                 contours, _ = cv2.findContours(
                     mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                 )
                 cv2.drawContours(
-                    overlay, contours, -1, tuple(int(value) for value in color), 2
+                    overlay, contours, -1, color, 2
                 )
         self.latest_overlay = overlay
         self.latest_overlay_stamp = stamp
