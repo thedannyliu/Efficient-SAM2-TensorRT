@@ -49,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--workspace-gib", type=float, default=8.0)
     build.add_argument("--builder-optimization-level", type=int, choices=range(6), default=5)
     build.add_argument("--max-aux-streams", type=int, default=0)
+    build.add_argument("--reuse-downstream-engines")
     build.add_argument("--allow-non-thor", action="store_true", help=argparse.SUPPRESS)
 
     validate = subparsers.add_parser("validate", help="apply the no-accuracy-loss gate")
@@ -152,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_non_thor=args.allow_non_thor,
             builder_optimization_level=args.builder_optimization_level,
             max_aux_streams=args.max_aux_streams,
+            reuse_downstream_engines=args.reuse_downstream_engines,
         )
         return 0
     if args.command == "validate":

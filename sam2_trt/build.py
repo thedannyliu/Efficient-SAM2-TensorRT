@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from .manifest import BundleManifest, EngineRecord, sha256_file
@@ -150,6 +151,7 @@ def build_bundle(
     allow_non_thor: bool = False,
     builder_optimization_level: int = 5,
     max_aux_streams: int = 0,
+    reuse_downstream_engines: str | Path | None = None,
 ) -> Path:
     _validate_builder_options(builder_optimization_level, max_aux_streams)
     require_thor(allow_non_thor)
@@ -162,9 +164,57 @@ def build_bundle(
         raise ValueError(
             f"graph dtype is {exported_dtype}, but precision {precision} requires {expected_dtype} export"
         )
+    reused_root = Path(reuse_downstream_engines).resolve() if reuse_downstream_engines else None
+    reused_records: dict[str, EngineRecord] = {}
+    if reused_root:
+        if reused_root == root:
+            raise ValueError("downstream engine source must be a different bundle")
+        reused_manifest = BundleManifest.read(reused_root / "manifest.json")
+        if reused_manifest.downstream_checkpoint_sha256 != manifest.downstream_checkpoint_sha256:
+            raise ValueError("reused downstream checkpoint SHA256 does not match")
+        if reused_manifest.environment.get("export_dtype") != exported_dtype:
+            raise ValueError("reused downstream export dtype does not match")
+        if reused_manifest.environment.get("tensorrt_device_model") != device_model():
+            raise ValueError("reused downstream engines were built for a different device")
+        reused_records = {
+            record.role: record
+            for record in reused_manifest.engines
+            if record.precision == precision
+        }
+
     records: list[EngineRecord] = []
+    built_engines: list[str] = []
+    reused_engines: list[str] = []
     for role in ("encoder", "prompt_point_step", "prompt_box_step", "track_step"):
         engine_name = f"{role}.{precision}.engine"
+        if role != "encoder" and reused_root:
+            if sha256_file(root / f"{role}.onnx") != sha256_file(reused_root / f"{role}.onnx"):
+                raise ValueError(f"reused {role} ONNX SHA256 does not match")
+            try:
+                source_record = reused_records[role]
+            except KeyError as exc:
+                raise ValueError(f"reused bundle has no {precision} {role} engine") from exc
+            source_engine = reused_root / source_record.filename
+            if sha256_file(source_engine) != source_record.sha256:
+                raise ValueError(f"reused {role} engine SHA256 does not match its manifest")
+            destination = root / engine_name
+            destination.unlink(missing_ok=True)
+            try:
+                os.link(source_engine, destination)
+            except OSError:
+                shutil.copy2(source_engine, destination)
+            records.append(
+                EngineRecord(
+                    role=role,
+                    filename=engine_name,
+                    sha256=source_record.sha256,
+                    precision=precision,
+                    inputs=source_record.inputs,
+                    outputs=source_record.outputs,
+                )
+            )
+            reused_engines.append(engine_name)
+            continue
         inputs, outputs = build_engine(
             root / f"{role}.onnx",
             root / engine_name,
@@ -185,10 +235,14 @@ def build_bundle(
                 outputs=outputs,
             )
         )
+        built_engines.append(engine_name)
     manifest.engines = records
     manifest.environment["tensorrt_device_model"] = device_model()
     manifest.environment["builder_optimization_level"] = builder_optimization_level
     manifest.environment["max_aux_streams"] = max_aux_streams
+    manifest.environment["reused_downstream_engine_dir"] = (
+        os.fspath(reused_root) if reused_root else None
+    )
     try:
         import tensorrt as trt
 
@@ -203,6 +257,8 @@ def build_bundle(
                 "builder_optimization_level": builder_optimization_level,
                 "max_aux_streams": max_aux_streams,
                 "engines": [record.filename for record in records],
+                "built_engines": built_engines,
+                "reused_engines": reused_engines,
             },
             indent=2,
         )
