@@ -311,7 +311,6 @@ struct Tracker::Impl {
     const auto slot = static_cast<std::size_t>(group.front()->id - 1);
     auto execution_stream = track_streams.at(slot);
     auto& track = *track_engines.at(slot);
-    check_cuda(cudaStreamWaitEvent(execution_stream, encoded_ready, 0));
     const int batch = padded_object_batch(static_cast<int>(group.size()));
     const int memories = static_cast<int>(selections.front().memories.size());
     const int pointers = static_cast<int>(selections.front().pointers.size());
@@ -365,6 +364,7 @@ struct Tracker::Impl {
     inputs["object_pointers"] = std::move(object_pointers);
     inputs["pointer_frame_distance"] = device_from_i64(
         distance, {pointers, batch}, execution_stream);
+    check_cuda(cudaStreamWaitEvent(execution_stream, encoded_ready, 0));
     auto output = track.run(inputs, 0, execution_stream);
     for (std::size_t index = 0; index < group.size(); ++index)
       save_outputs(*group[index], output, index, false);

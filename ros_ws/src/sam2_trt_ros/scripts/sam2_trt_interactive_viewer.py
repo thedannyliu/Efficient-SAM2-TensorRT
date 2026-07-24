@@ -460,9 +460,15 @@ def main() -> None:
     )
     spin_thread.start()
     try:
+        next_display = perf_counter()
         while rclpy.ok() and spin_thread.is_alive():
             node.display()
-            sleep(node.display_period)
+            next_display += node.display_period
+            delay = next_display - perf_counter()
+            if delay > 0:
+                sleep(delay)
+            else:
+                next_display = perf_counter()
     finally:
         executor.shutdown()
         spin_thread.join(timeout=5.0)
