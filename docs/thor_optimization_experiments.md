@@ -319,6 +319,55 @@ stutter is a combination of irregular RealSense delivery and the CPU/memory
 cost of copying, compositing, and presenting ROS images; it is not caused by
 motion making the TensorRT graph substantially slower.
 
+## Remaining end-to-end optimization roadmap
+
+The measured single-object headless path is 34.08 ms, while its encoder and
+track engines sum to 21.29 ms. The 12.79 ms difference is now the largest
+no-accuracy-loss target. The current C++ runtime allocates and frees device
+storage for the input, normalized tensor, every engine output, memory banks,
+temporal inputs, and output mask on each frame. It also allocates a pageable
+host mask, copies device-to-host, and synchronizes the only CUDA stream before
+returning.
+
+The following order separates measured facts from projected targets:
+
+| Priority | Change | Evidence and acceptance target | Accuracy risk |
+| ---: | --- | --- | --- |
+| 0 | Run reproducible clocks | Thor was in 120 W mode, not MAXN, and `jetson_clocks` was not locked. Repeat every candidate under one fixed mode after the user runs the required `sudo` commands. | None |
+| 1 | Add CUDA-event stage timing | Split H2D, preprocess, encoder, state pack, track, mask resize, D2H, allocation, and sync. Explain at least 90% of the 12.79 ms engine/live gap before larger refactors. | None |
+| 2 | Persistent tensor arena and pinned double buffers | Reuse fixed-shape engine I/O and state-pack buffers; replace per-frame `cudaMalloc/cudaFree`; use pinned RGB/mask staging. Initial goal: 24--27 ms one-object `inference_ms`, p99 below 30 ms. | None |
+| 3 | Overlap encoder and tracking | Encode frame `n+1` on a second stream while frame `n` runs the state-dependent track step; overlap mask D2H on a copy stream. The engine throughput floor changes from `6.33 + 14.97 = 21.29 ms` toward `max(6.33, 14.97) = 14.97 ms`, subject to Thor contention. | None |
+| 4 | Remove local ROS copies and backpressure | Make the tracker a composable node with the RealSense component and intra-process communication. Publish masks with best-effort keep-last-1 QoS and skip legacy/full-resolution outputs with no subscribers. | None |
+| 5 | Publish one small preview for the UI | Compose object colors in C++/CUDA and publish one 640x360 or 960x540 preview. The Python viewer should not receive a full RGB frame plus one 1280x720 mask per object just to display them. Target at least 25 present FPS on a stable 30 FPS camera. | None |
+| 6 | Parallel batch-1 contexts for multiple objects | Batch-2/4 engines are already slower than serial batch-1. Instead, test independent batch-1 execution contexts and streams after the shared encoder, with a device-resident state bank and one combined preview. | None |
+| 7 | Lower precision only in the remaining track bottleneck | Add explicit Q/DQ and calibration for selected track Conv/MatMul operations while keeping normalization, softmax, IoU/object-score heads, memory encoder, and pointer logic in FP16/FP32. Promote only if video J&F and mask agreement remain at least 0.95. | Medium |
+| 8 | Temporal/reduced-resolution approximations | Reuse encoder features on alternate frames, warp masks between model updates, or retrain for a smaller input. These can improve visible FPS beyond the exact-model ceiling but require motion-stratified accuracy tests. | High |
+
+At 1280x720, one RGB8 frame is 2.76 MB and one mono8 object mask is
+0.92 MB. A 30 FPS viewer therefore receives about 110.6 MB/s before DDS and
+Python copies for one object; every additional full-resolution mask adds
+27.6 MB/s. The current mask publisher also uses reliable history instead of a
+latest-only sensor policy. This explains why UI load can disturb camera
+delivery even after mask composition itself is reduced to 3--4 ms.
+
+For one object at a fixed 30 FPS camera, the observable headless FPS can only
+rise from 26.51 to about 30 FPS (`1.13x`) because the camera becomes the cap.
+The more important gains are lower p99/source age, no dropped frames, and
+multi-object scaling. With the current serial batch-1 engines, engine-only
+steady-state estimates are:
+
+| Objects | Encoder + serial track (ms) | Engine-only FPS |
+| ---: | ---: | ---: |
+| 1 | 21.29 | 46.96 |
+| 2 | 36.26 | 27.58 |
+| 4 | 66.19 | 15.11 |
+| 8 | 126.06 | 7.93 |
+
+This makes buffer reuse plus independent batch-1 stream overlap the primary
+multi-object experiment. Do not retry batch-2/4 scheduling, increase ROS queue
+depth, or quantize the already-small TV5 encoder first: those choices are
+contradicted by the current Thor measurements or increase source age.
+
 Artifacts remain ignored under:
 
 ```text
