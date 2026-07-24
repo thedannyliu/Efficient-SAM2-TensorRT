@@ -73,6 +73,10 @@ must be recorded for every camera run.
 | Track dynamic export | `memory_frames=1` violated a view-stride guard in expanded RoPE frequencies | Replaced expand/flatten with direct token-axis repeat in `128f47b`; complex-reference tests pass. |
 | Complete 5M FP16 ONNX export | Four graphs passed `onnx.checker`; 47.998 s | Encoder 12.5 MB, point 13.9 MB, box 13.9 MB, track 60.4 MB. |
 | C++ FP16 state handoff audit | Prompt graph emits an FP32 object pointer while the track graph accepts FP16 | Added explicit CUDA FP32-to-engine-dtype conversion in `68edbf2`; also removed batch-1 feature replication copies. |
+| Complete 5M FP16 engine build | Four engine hashes passed `verify-bundle` | Track build took 312.337 s and produced a 152.7 MB engine. |
+| ROS Jazzy build | Generic service callbacks and missing ament build metadata failed package discovery | Fixed in `e6f6ab5` and `abed0c0`; both packages then built and were visible to `ros2 pkg`. |
+| Real-frame prompt parity | Box mean/minimum IoU 0.9940/0.9810; point mean/minimum 0.9315/0.4736 | Encoder FP16 is stable. One small-mask point sample changed the multimask selection, so all-FP16 is not yet promoted for every prompt type. |
+| RealSense C++/ROS smoke | AddObject, TensorRT tracking, mask/result publish, trace, and process cleanup passed | Physical camera was limited by its USB 2.1 connection; see the measured distinction between capacity and throughput below. |
 
 ## Reproduction: TinyViT-5M FP16 baseline
 
@@ -112,7 +116,79 @@ Initial full-profile engine build progress:
 | Encoder | 392.305 s | 13.8 MB | batch 1 |
 | Point prompt | 802.662 s | 253.6 MB | batch 1/2/4/8 |
 | Box prompt | 342.610 s | 253.6 MB | batch 1/2/4/8 |
-| Track | in progress | pending | batch 1/2/4 |
+| Track | 312.337 s | 152.7 MB | batch 1/2/4 |
+
+## TinyViT-5M FP16 Thor measurements
+
+Engine-only measurements used 20 warmups and 100 timed runs:
+
+| Graph | Batch | Mean (ms) | p50 (ms) | p90 (ms) | p99 (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Encoder | 1 | 6.328 | 6.351 | 6.435 | 6.486 |
+| Point prompt | 1 | 2.405 | 2.387 | 2.453 | 2.475 |
+| Box prompt | 1 | 2.543 | 2.522 | 2.598 | 2.618 |
+| Track | 1 | 14.967 | 15.122 | 15.205 | 15.269 |
+| Track | 2 | 55.212 | 55.188 | 55.535 | 56.080 |
+| Track | 4 | 113.317 | 113.302 | 113.916 | 114.221 |
+
+The single-object steady-state engine sum is about `21.294 ms`, or 46.96 FPS
+before preprocessing, state packing, mask transfer, ROS, and camera delivery.
+Track batch 2/4 is slower than two/four batch-1 calls, so the next scheduler
+candidate should use batch 1 for tracking on Thor and measure the complete
+multi-object pipeline before promotion.
+
+Prompt parity used `videos/test1.mov` and `videos/test2.mov`, frames
+0/15/30/45, identical normalized prompts, threshold zero, and the same
+checkpoint:
+
+| Prompt | Mean mask IoU | Minimum mask IoU | Result |
+| --- | ---: | ---: | --- |
+| Box `(0.20, 0.20, 0.58, 0.88)` | 0.9940 | 0.9810 | Passes 0.95 rule |
+| Point `(0.40, 0.55)` | 0.9315 | 0.4736 | Fails 0.95 rule |
+
+Seven of eight point samples scored 0.9811--0.9998. The outlier reference and
+candidate masks contained 2,293 and 4,151 foreground pixels. This localizes the
+next precision experiment to point multimask scoring/selection and decoder
+normalization instead of reverting the TinyViT encoder to FP32.
+
+## Camera latency versus FPS check
+
+Commit `eade8e8` separates three quantities that were easy to confuse:
+
+- `processing_capacity_fps`: reciprocal of the current frame's callback
+  latency;
+- `processed_fps`: reciprocal of the interval between processed frame starts;
+- summary `throughput_fps`: interval count divided by total measured interval
+  duration.
+
+Do not use the arithmetic mean of instantaneous `processed_fps` as run
+throughput. A 640x480 RGB8, nominal 15 FPS, one-object box run produced:
+
+| Metric | Result |
+| --- | ---: |
+| Object frames | 42 |
+| Mean / p50 / p90 / p99 inference | 40.47 / 37.40 / 49.62 / 79.79 ms |
+| Mean / p50 / p90 / p99 callback | 40.77 / 37.75 / 49.94 / 80.14 ms |
+| Capacity from mean callback | 24.53 FPS |
+| Measured throughput | 1.98 FPS |
+| Frame interval p50 / p90 / max | 200.11 / 1601.49 / 3069.04 ms |
+| Mean source-to-result age | 100.53 ms |
+| Queue drops | 0 |
+
+Camera timestamp intervals and worker intervals correlated at `0.9999998`; the
+mean absolute difference was 0.235 ms. The throughput loss is therefore
+upstream camera/USB delivery, not TensorRT latency or latest-frame queue loss.
+The driver reported USB 2.1 and warned about reduced performance. Repeat the
+same run after the D455F negotiates USB 3 before recording final camera FPS.
+
+Artifacts remain ignored under:
+
+```text
+results/thor/tv5_fp16_aux0/engines/
+results/thor/tv5_fp16_aux0/prompt_parity/
+results/thor/tv5_fp16_aux0/box_parity/
+results/thor/tv5_fp16_aux0/realsense_usb2_box_metrics_v2/
+```
 
 ## Planned precision ablations
 
