@@ -814,6 +814,19 @@ Viewer 依 `header.stamp` 配對 image、result 與所有 object masks；同一 
 的預期 masks 全部到齊後才提交新 overlay。不要在 result 先到時先顯示 raw
 frame，否則 raw/mask 會交替造成視覺閃爍。
 
+畫面上的 `infer` 是完整 `Tracker::process_rgb8` wall time：包含 host-to-device
+copy、CUDA resize/normalize、encoder、prompt/track engine、memory state packing、
+mask resize 與 device-to-host copy，但不含 ROS queue wait 或 mask publish。
+它是 live pipeline 最實用的 model-path latency，不等於單張 TensorRT plan 的
+kernel latency。純 engine latency 請用第 6 節的 `benchmark-engine`；其 inputs
+和 outputs 預先配置，使用 CUDA events，只量 plan execution。
+
+SAM2 steady tracking 每幀由一個 encoder 加上每個 object 的 track step 組成。
+目前 Thor scheduler 使用 batch-1 track step，因此可用
+`encoder mean + object_count * track-b1 mean` 估計純 engine 下限，再用
+`inference_ms` 量 allocation、state packing、transfer 與 postprocess 加入後的
+實際 model path。
+
 ## 12. 效能記錄方式
 
 ### 12.1 ROS camera pipeline JSONL

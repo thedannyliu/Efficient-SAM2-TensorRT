@@ -239,6 +239,24 @@ listed by the same-stamp result and replaces the current object on each new
 prompt by default. This is a visualization synchronization fix, not a
 TensorRT precision or engine change.
 
+The rebuilt viewer at `4e8ce78` was reset and given one box prompt. Over the
+latest 200 one-object frames, TV5M measured 37.43 ms mean inference
+(p50/p90/p99 37.03/39.54/42.30 ms), 38.04 ms mean worker time, and 21.30 FPS
+interval throughput. Mean source age was 79.81 ms and five latest-frame
+overwrites occurred. This residual latency can make motion less fluid than the
+30 FPS camera, but the viewer no longer alternates a raw frame with its
+same-stamp masked frame.
+
+The active interactive test uses `sam2.1-tinyvit-5m/fp16_aux0`: the distilled
+TinyViT-5M image encoder plus the SAM2.1-L prompt, mask, memory, and pointer
+components, all exported as FP16 engines. The verified pure-engine means are
+6.328 ms encoder, 2.405 ms point prompt, 2.543 ms box prompt, and 14.967 ms
+batch-1 track. Therefore the steady one-object engine-only lower bound is
+21.294 ms; the live 37.43 ms `inference_ms` also includes transfers,
+preprocessing, state construction, allocations, mask conversion, and
+synchronization. The viewer can be launched with `replace_on_prompt:=false`
+to accumulate up to eight objects while retaining same-stamp mask commit.
+
 Artifacts remain ignored under:
 
 ```text
