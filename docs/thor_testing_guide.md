@@ -801,12 +801,21 @@ sam2-trt benchmark \
 
 摘要包含存在於 trace 中的 `queue_wait_ms`、`color_convert_ms`、`inference_ms`、
 `mask_publish_ms`、`callback_total_ms`、`source_age_ms`、`end_to_end_ms`、
-`tracking_fps` 的 mean/p50/p90/p99，以及總 throughput 與 dropped frames。
+`processed_fps` 的 mean/p50/p90/p99，以及總 throughput、measurement duration
+與 dropped frames。`tracking_fps` 是保留給舊 trace 的 `processed_fps` alias。
 
 `inference_ms` 是 `Tracker::process_rgb8` 的完整 wall time，包含 CUDA/TensorRT
 執行及 runtime 為回傳 mask 所需的同步；它不是單獨 engine kernel time。
 `callback_total_ms` 從 ROS subscription 收到 frame 算到 result publish 前；
 `end_to_end_ms` 則使用 image header timestamp，因此只有 timestamp clock 正確時才可信。
+
+不要預期 `1000 / inference_ms` 等於 camera FPS。前者接近 pipeline 在 input
+持續供應時的 service capacity；後者受 camera publish cadence、USB、queue 與
+dropped frames 限制。node 另外輸出 `processing_capacity_fps`（單幀
+`1000 / callback_total_ms`）與 `processed_fps`（相鄰 processed frame start
+interval）。正式 run 的實際 FPS 使用 summary 的 `throughput_fps`：
+`interval_count / measurement_duration_s`。不要對逐幀 `processed_fps` 做算術
+平均來代替 throughput，因為長 frame gap 會被錯誤低估。
 
 ### 12.2 其他應一起記錄
 

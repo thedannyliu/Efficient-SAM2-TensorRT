@@ -23,6 +23,8 @@ def summarize_trace(path: str | Path) -> dict[str, object]:
         "callback_total_ms",
         "source_age_ms",
         "end_to_end_ms",
+        "processing_capacity_fps",
+        "processed_fps",
         "tracking_fps",
     )
     summary: dict[str, object] = {"frames": len(rows), "dropped_frames": sum(int(row.get("dropped", 0)) for row in rows)}
@@ -37,5 +39,11 @@ def summarize_trace(path: str | Path) -> dict[str, object]:
             }
     intervals = [float(row["frame_interval_ms"]) for row in rows if float(row.get("frame_interval_ms", 0.0)) > 0]
     duration = sum(intervals) / 1000.0
+    summary["measurement_duration_s"] = duration
+    summary["interval_count"] = len(intervals)
     summary["throughput_fps"] = len(intervals) / duration if duration > 0 else None
+    callback = summary.get("callback_total_ms")
+    summary["processing_capacity_fps_from_mean_latency"] = (
+        1000.0 / callback["mean"] if callback and callback["mean"] > 0 else None
+    )
     return summary

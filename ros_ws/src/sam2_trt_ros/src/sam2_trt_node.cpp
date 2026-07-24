@@ -164,6 +164,7 @@ class Sam2TrtNode final : public rclcpp::Node {
       object_mask_publisher_->publish(std::move(message));
     }
     const auto metrics_time = SteadyClock::now();
+    const double callback_total_ms = milliseconds(metrics_time - pending.arrival);
     const auto dropped_total = dropped_frames_.load();
     const auto dropped = dropped_total - last_reported_dropped_frames_;
     last_reported_dropped_frames_ = dropped_total;
@@ -182,11 +183,17 @@ class Sam2TrtNode final : public rclcpp::Node {
          << ",\"color_convert_ms\":" << milliseconds(color_end - color_start)
          << ",\"inference_ms\":" << milliseconds(inference_end - inference_start)
          << ",\"mask_publish_ms\":" << milliseconds(metrics_time - mask_publish_start)
-         << ",\"callback_total_ms\":" << milliseconds(metrics_time - pending.arrival)
+         << ",\"callback_total_ms\":" << callback_total_ms
          << ",\"frame_interval_ms\":" << frame_interval_ms
          << ",\"dropped\":" << dropped
          << ",\"dropped_frames\":" << dropped_total;
-    if (frame_interval_ms > 0.0) json << ",\"tracking_fps\":" << 1000.0 / frame_interval_ms;
+    if (callback_total_ms > 0.0)
+      json << ",\"processing_capacity_fps\":" << 1000.0 / callback_total_ms;
+    if (frame_interval_ms > 0.0) {
+      const double processed_fps = 1000.0 / frame_interval_ms;
+      json << ",\"processed_fps\":" << processed_fps
+           << ",\"tracking_fps\":" << processed_fps;
+    }
     const auto stamp_ns = rclcpp::Time(frame->header.stamp).nanoseconds();
     if (stamp_ns > 0) {
       const auto source_age_ns = (get_clock()->now() - rclcpp::Time(frame->header.stamp)).nanoseconds();
