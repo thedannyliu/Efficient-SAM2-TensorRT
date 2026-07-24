@@ -7,6 +7,7 @@ import shutil
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from types import MethodType
 from typing import Sequence
 
 from .manifest import BundleManifest, git_revision
@@ -85,6 +86,18 @@ def _load_tinyvit(spec: ModelSpec, distill_root: str | Path, device: str, downst
     for parameter in student.parameters():
         parameter.requires_grad_(False)
     return student, task_load_summary
+
+
+def patch_onnx_stability_scores(torch, model) -> None:
+    def _get_stability_scores(decoder, mask_logits):
+        flattened = mask_logits.flatten(-2)
+        delta = decoder.dynamic_multimask_stability_delta
+        area_i = (flattened > delta).float().mean(dim=-1)
+        area_u = (flattened > -delta).float().mean(dim=-1)
+        return torch.where(area_u > 0, area_i / area_u, 1.0)
+
+    decoder = model.sam_mask_decoder
+    decoder._get_stability_scores = MethodType(_get_stability_scores, decoder)
 
 
 def _modules(torch, downstream, encoder, image_position):
@@ -313,6 +326,7 @@ def export_bundle(
     downstream.to(dtype=torch_dtype)
     encoder.to(dtype=torch_dtype)
     patched_rope_modules = patch_real_rope(downstream)
+    patch_onnx_stability_scores(torch, downstream)
 
     with torch.inference_mode():
         dummy = torch.zeros(1, 3, 1024, 1024, device=device, dtype=torch_dtype)

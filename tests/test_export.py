@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from sam2_trt.export import _dynamic_input_shapes, _export_one
+from sam2_trt.export import _dynamic_input_shapes, _export_one, patch_onnx_stability_scores
 
 
 class DynamicInputShapesTest(unittest.TestCase):
@@ -73,6 +73,22 @@ class DynamicInputShapesTest(unittest.TestCase):
         autocast.assert_called_once_with(device_type="cuda", dtype="fp16")
         autocast.return_value.__enter__.assert_called_once_with()
         autocast.return_value.__exit__.assert_called_once()
+
+    def test_onnx_stability_patch_matches_pixel_count_formula(self):
+        import torch
+
+        decoder = SimpleNamespace(dynamic_multimask_stability_delta=0.05)
+        model = SimpleNamespace(sam_mask_decoder=decoder)
+        patch_onnx_stability_scores(torch, model)
+        logits = torch.linspace(-1, 1, 4 * 256 * 256).reshape(1, 4, 256, 256)
+        flattened = logits.flatten(-2)
+        area_i = torch.sum(flattened > 0.05, dim=-1).float()
+        area_u = torch.sum(flattened > -0.05, dim=-1).float()
+        reference = torch.where(area_u > 0, area_i / area_u, 1.0)
+
+        actual = decoder._get_stability_scores(logits)
+
+        torch.testing.assert_close(actual, reference, rtol=0, atol=0)
 
 
 if __name__ == "__main__":
