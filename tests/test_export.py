@@ -4,7 +4,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from sam2_trt.export import _dynamic_input_shapes, _export_one, patch_onnx_stability_scores
+from sam2_trt.export import (
+    _dynamic_input_shapes,
+    _export_one,
+    fp32_layer_norm_export,
+    patch_onnx_stability_scores,
+)
 
 
 class DynamicInputShapesTest(unittest.TestCase):
@@ -89,6 +94,18 @@ class DynamicInputShapesTest(unittest.TestCase):
         actual = decoder._get_stability_scores(logits)
 
         torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+
+    def test_fp32_layer_norm_export_preserves_interface_dtype_and_restores_forward(self):
+        import torch
+
+        layer = torch.nn.LayerNorm(4).half()
+        original = layer.forward
+        inputs = torch.randn(2, 4, dtype=torch.float16)
+        with fp32_layer_norm_export(torch, layer) as patched:
+            output = layer(inputs)
+            self.assertEqual(patched, 1)
+            self.assertEqual(output.dtype, torch.float16)
+        self.assertEqual(layer.forward, original)
 
 
 if __name__ == "__main__":

@@ -100,6 +100,31 @@ def patch_onnx_stability_scores(torch, model) -> None:
     decoder._get_stability_scores = MethodType(_get_stability_scores, decoder)
 
 
+@contextlib.contextmanager
+def fp32_layer_norm_export(torch, module):
+    replacements = []
+
+    def forward(layer, inputs):
+        output = torch.nn.functional.layer_norm(
+            inputs.float(),
+            layer.normalized_shape,
+            layer.weight.float() if layer.weight is not None else None,
+            layer.bias.float() if layer.bias is not None else None,
+            layer.eps,
+        )
+        return output.to(dtype=inputs.dtype)
+
+    for child in module.modules():
+        if isinstance(child, torch.nn.LayerNorm):
+            replacements.append((child, child.forward))
+            child.forward = MethodType(forward, child)
+    try:
+        yield len(replacements)
+    finally:
+        for child, original in replacements:
+            child.forward = original
+
+
 def _modules(torch, downstream, encoder, image_position):
     class OfficialEncoder(torch.nn.Module):
         def __init__(self, model):
@@ -304,10 +329,27 @@ def export_bundle(
     device: str = "cuda",
     dtype: str = "fp32",
     reuse_downstream_dir: str | Path | None = None,
+    reuse_downstream_roles: Sequence[str] = (),
+    fp32_layernorm_roles: Sequence[str] = (),
 ) -> Path:
     import torch
 
     torch_dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}[dtype]
+    valid_roles = {"encoder", "prompt_point_step", "prompt_box_step", "track_step"}
+    unknown_roles = set(fp32_layernorm_roles).difference(valid_roles)
+    if unknown_roles:
+        raise ValueError(f"unknown FP32 LayerNorm roles: {sorted(unknown_roles)}")
+    valid_downstream_roles = valid_roles.difference({"encoder"})
+    unknown_reuse_roles = set(reuse_downstream_roles).difference(valid_downstream_roles)
+    if unknown_reuse_roles:
+        raise ValueError(f"unknown reused downstream roles: {sorted(unknown_reuse_roles)}")
+    if reuse_downstream_roles and not reuse_downstream_dir:
+        raise ValueError("reused downstream roles require reuse_downstream_dir")
+    selected_reuse_roles = (
+        set(reuse_downstream_roles)
+        if reuse_downstream_roles
+        else valid_downstream_roles if reuse_downstream_dir else set()
+    )
 
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -318,7 +360,7 @@ def export_bundle(
         if distill_root is None:
             raise ValueError("--distill-root is required for TinyViT models")
         encoder, task_load_summary = _load_tinyvit(spec, distill_root, device, downstream)
-        if task_load_summary is not None and reuse_downstream_dir:
+        if task_load_summary is not None and selected_reuse_roles:
             raise ValueError(
                 "this distilled checkpoint contains task-tuned downstream weights; "
                 "its prompt/track graphs cannot reuse the base SAM2.1-L graphs"
@@ -344,16 +386,21 @@ def export_bundle(
         common_outputs = [
             "mask_logits", "iou", "object_pointer", "object_score", "new_memory", "new_memory_position"
         ]
-        _export_one(
-            torch,
-            encoder_module,
-            (dummy,),
-            output / "encoder.onnx",
-            ["image"],
-            ["high_res_s0", "high_res_s1", "image_embedding", "image_position"],
-            {},
-            exporter=spec.encoder_exporter,
-        )
+        with (
+            fp32_layer_norm_export(torch, encoder_module)
+            if "encoder" in fp32_layernorm_roles
+            else contextlib.nullcontext()
+        ):
+            _export_one(
+                torch,
+                encoder_module,
+                (dummy,),
+                output / "encoder.onnx",
+                ["image"],
+                ["high_res_s0", "high_res_s1", "image_embedding", "image_position"],
+                {},
+                exporter=spec.encoder_exporter,
+            )
 
         export_batch = 2
         high0 = torch.zeros(export_batch, 32, 256, 256, device=device, dtype=torch_dtype)
@@ -362,61 +409,83 @@ def export_bundle(
         coords = torch.zeros(export_batch, 2, 2, device=device, dtype=torch_dtype)
         labels = torch.tensor([[2, 3]], dtype=torch.int32, device=device).expand(export_batch, -1)
         batch_outputs = {name: {0: "batch"} for name in common_outputs}
-        if reuse_downstream_dir:
-            source = Path(reuse_downstream_dir).resolve()
-            for filename in ("prompt_point_step.onnx", "prompt_box_step.onnx", "track_step.onnx"):
-                source_file = source / filename
+        source = Path(reuse_downstream_dir).resolve() if reuse_downstream_dir else None
+
+        for name, module, module_coords, module_labels in (
+            ("prompt_point_step", point_prompt_module, coords[:, :1], torch.ones_like(labels[:, :1])),
+            ("prompt_box_step", box_prompt_module, coords, labels),
+        ):
+            destination = output / f"{name}.onnx"
+            if name in selected_reuse_roles:
+                source_file = source / destination.name
                 if not source_file.is_file():
                     raise FileNotFoundError(f"reused downstream graph is missing: {source_file}")
-                destination = output / filename
+                destination.unlink(missing_ok=True)
                 try:
                     os.link(source_file, destination)
                 except OSError:
                     shutil.copy2(source_file, destination)
-        else:
-            for name, module, module_coords, module_labels in (
-                ("prompt_point_step", point_prompt_module, coords[:, :1], torch.ones_like(labels[:, :1])),
-                ("prompt_box_step", box_prompt_module, coords, labels),
-            ):
-                _export_one(
-                    torch,
-                    module,
-                    (high0, high1, embedding, module_coords, module_labels),
-                    output / f"{name}.onnx",
-                    ["high_res_s0", "high_res_s1", "image_embedding", "point_coords", "point_labels"],
-                    common_outputs,
-                    {
-                        "high_res_s0": {0: "batch"}, "high_res_s1": {0: "batch"},
-                        "image_embedding": {0: "batch"}, "point_coords": {0: "batch"},
-                        "point_labels": {0: "batch"}, **batch_outputs,
-                    },
-                    autocast_dtype=torch_dtype if dtype != "fp32" else None,
-                )
+            else:
+                with (
+                    fp32_layer_norm_export(torch, module)
+                    if name in fp32_layernorm_roles
+                    else contextlib.nullcontext()
+                ):
+                    _export_one(
+                        torch,
+                        module,
+                        (high0, high1, embedding, module_coords, module_labels),
+                        destination,
+                        ["high_res_s0", "high_res_s1", "image_embedding", "point_coords", "point_labels"],
+                        common_outputs,
+                        {
+                            "high_res_s0": {0: "batch"}, "high_res_s1": {0: "batch"},
+                            "image_embedding": {0: "batch"}, "point_coords": {0: "batch"},
+                            "point_labels": {0: "batch"}, **batch_outputs,
+                        },
+                        autocast_dtype=torch_dtype if dtype != "fp32" else None,
+                    )
 
+        if "track_step" in selected_reuse_roles:
+            source_file = source / "track_step.onnx"
+            if not source_file.is_file():
+                raise FileNotFoundError(f"reused downstream graph is missing: {source_file}")
+            destination = output / "track_step.onnx"
+            destination.unlink(missing_ok=True)
+            try:
+                os.link(source_file, destination)
+            except OSError:
+                shutil.copy2(source_file, destination)
+        else:
             mask_memory = torch.zeros(2, 4096, export_batch, 64, device=device, dtype=torch_dtype)
             mask_pos = torch.zeros_like(mask_memory)
             mask_tpos = torch.zeros(2, export_batch, dtype=torch.int64, device=device)
             pointer = torch.zeros(2, export_batch, 256, device=device, dtype=torch_dtype)
             pointer_distance = torch.zeros(2, export_batch, dtype=torch.int64, device=device)
             track_position = image_position.expand(export_batch, -1, -1, -1)
-            _export_one(
-                torch,
-                track_module,
-                (high0, high1, embedding, track_position, mask_memory, mask_pos, mask_tpos, pointer, pointer_distance),
-                output / "track_step.onnx",
-                ["high_res_s0", "high_res_s1", "image_embedding", "image_position", "mask_memory", "mask_memory_position", "mask_temporal_position", "object_pointers", "pointer_frame_distance"],
-                common_outputs,
-                {
-                    "high_res_s0": {0: "batch"}, "high_res_s1": {0: "batch"},
-                    "image_embedding": {0: "batch"}, "image_position": {0: "batch"},
-                    "mask_memory": {0: "memory_frames", 2: "batch"},
-                    "mask_memory_position": {0: "memory_frames", 2: "batch"},
-                    "mask_temporal_position": {0: "memory_frames", 1: "batch"},
-                    "object_pointers": {0: "pointer_frames", 1: "batch"},
-                    "pointer_frame_distance": {0: "pointer_frames", 1: "batch"}, **batch_outputs,
-                },
-                autocast_dtype=torch_dtype if dtype != "fp32" else None,
-            )
+            with (
+                fp32_layer_norm_export(torch, track_module)
+                if "track_step" in fp32_layernorm_roles
+                else contextlib.nullcontext()
+            ):
+                _export_one(
+                    torch,
+                    track_module,
+                    (high0, high1, embedding, track_position, mask_memory, mask_pos, mask_tpos, pointer, pointer_distance),
+                    output / "track_step.onnx",
+                    ["high_res_s0", "high_res_s1", "image_embedding", "image_position", "mask_memory", "mask_memory_position", "mask_temporal_position", "object_pointers", "pointer_frame_distance"],
+                    common_outputs,
+                    {
+                        "high_res_s0": {0: "batch"}, "high_res_s1": {0: "batch"},
+                        "image_embedding": {0: "batch"}, "image_position": {0: "batch"},
+                        "mask_memory": {0: "memory_frames", 2: "batch"},
+                        "mask_memory_position": {0: "memory_frames", 2: "batch"},
+                        "mask_temporal_position": {0: "memory_frames", 1: "batch"},
+                        "object_pointers": {0: "pointer_frames", 1: "batch"},
+                        "pointer_frame_distance": {0: "pointer_frames", 1: "batch"}, **batch_outputs,
+                    },
+                    autocast_dtype=torch_dtype if dtype != "fp32" else None,
+                )
 
     manifest = BundleManifest.create(
         model_id=spec.model_id,
@@ -438,8 +507,10 @@ def export_bundle(
     manifest.environment["reused_downstream_dir"] = (
         os.fspath(Path(reuse_downstream_dir).resolve()) if reuse_downstream_dir else None
     )
+    manifest.environment["reused_downstream_roles"] = sorted(selected_reuse_roles)
     manifest.environment["task_model_load"] = task_load_summary
     manifest.environment["real_rope_modules"] = patched_rope_modules
+    manifest.environment["fp32_layernorm_roles"] = list(fp32_layernorm_roles)
     manifest.write(output / "manifest.json")
     (output / "export.json").write_text(
         json.dumps(

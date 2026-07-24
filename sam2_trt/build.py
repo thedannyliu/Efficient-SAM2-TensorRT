@@ -152,6 +152,7 @@ def build_bundle(
     builder_optimization_level: int = 5,
     max_aux_streams: int = 0,
     reuse_downstream_engines: str | Path | None = None,
+    build_roles: tuple[str, ...] | None = None,
 ) -> Path:
     _validate_builder_options(builder_optimization_level, max_aux_streams)
     require_thor(allow_non_thor)
@@ -164,6 +165,13 @@ def build_bundle(
         raise ValueError(
             f"graph dtype is {exported_dtype}, but precision {precision} requires {expected_dtype} export"
         )
+    all_roles = ("encoder", "prompt_point_step", "prompt_box_step", "track_step")
+    selected_roles = set(build_roles or (("encoder",) if reuse_downstream_engines else all_roles))
+    unknown_roles = selected_roles.difference(all_roles)
+    if unknown_roles:
+        raise ValueError(f"unknown build roles: {sorted(unknown_roles)}")
+    if not selected_roles:
+        raise ValueError("at least one build role is required")
     reused_root = Path(reuse_downstream_engines).resolve() if reuse_downstream_engines else None
     reused_records: dict[str, EngineRecord] = {}
     if reused_root:
@@ -172,6 +180,8 @@ def build_bundle(
         reused_manifest = BundleManifest.read(reused_root / "manifest.json")
         if reused_manifest.downstream_checkpoint_sha256 != manifest.downstream_checkpoint_sha256:
             raise ValueError("reused downstream checkpoint SHA256 does not match")
+        if "encoder" not in selected_roles and reused_manifest.checkpoint_sha256 != manifest.checkpoint_sha256:
+            raise ValueError("reused encoder checkpoint SHA256 does not match")
         if reused_manifest.environment.get("export_dtype") != exported_dtype:
             raise ValueError("reused downstream export dtype does not match")
         if reused_manifest.environment.get("tensorrt_device_model") != device_model():
@@ -185,9 +195,11 @@ def build_bundle(
     records: list[EngineRecord] = []
     built_engines: list[str] = []
     reused_engines: list[str] = []
-    for role in ("encoder", "prompt_point_step", "prompt_box_step", "track_step"):
+    for role in all_roles:
         engine_name = f"{role}.{precision}.engine"
-        if role != "encoder" and reused_root:
+        if role not in selected_roles:
+            if not reused_root:
+                raise ValueError(f"{role} is not selected and no reused engine bundle was provided")
             if sha256_file(root / f"{role}.onnx") != sha256_file(reused_root / f"{role}.onnx"):
                 raise ValueError(f"reused {role} ONNX SHA256 does not match")
             try:
@@ -243,6 +255,7 @@ def build_bundle(
     manifest.environment["reused_downstream_engine_dir"] = (
         os.fspath(reused_root) if reused_root else None
     )
+    manifest.environment["built_roles"] = sorted(selected_roles)
     try:
         import tensorrt as trt
 

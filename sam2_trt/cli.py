@@ -42,6 +42,16 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--device", default="cuda")
     export.add_argument("--dtype", choices=("fp32", "fp16", "bf16"), default="fp32")
     export.add_argument("--reuse-downstream-dir")
+    export.add_argument(
+        "--reuse-downstream-role",
+        action="append",
+        choices=("prompt_point_step", "prompt_box_step", "track_step"),
+    )
+    export.add_argument(
+        "--fp32-layernorm-role",
+        action="append",
+        choices=("encoder", "prompt_point_step", "prompt_box_step", "track_step"),
+    )
 
     build = subparsers.add_parser("build", help="build TensorRT engines on Thor")
     build.add_argument("--bundle-dir", required=True)
@@ -50,6 +60,11 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--builder-optimization-level", type=int, choices=range(6), default=5)
     build.add_argument("--max-aux-streams", type=int, default=0)
     build.add_argument("--reuse-downstream-engines")
+    build.add_argument(
+        "--build-role",
+        action="append",
+        choices=("encoder", "prompt_point_step", "prompt_box_step", "track_step"),
+    )
     build.add_argument("--allow-non-thor", action="store_true", help=argparse.SUPPRESS)
 
     validate = subparsers.add_parser("validate", help="apply the no-accuracy-loss gate")
@@ -143,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             dtype=args.dtype,
             reuse_downstream_dir=args.reuse_downstream_dir,
+            reuse_downstream_roles=tuple(args.reuse_downstream_role or ()),
+            fp32_layernorm_roles=tuple(args.fp32_layernorm_role or ()),
         )
         return 0
     if args.command == "build":
@@ -154,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             builder_optimization_level=args.builder_optimization_level,
             max_aux_streams=args.max_aux_streams,
             reuse_downstream_engines=args.reuse_downstream_engines,
+            build_roles=tuple(args.build_role) if args.build_role else None,
         )
         return 0
     if args.command == "validate":
