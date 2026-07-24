@@ -134,8 +134,8 @@ Engine-only measurements used 20 warmups and 100 timed runs:
 The single-object steady-state engine sum is about `21.294 ms`, or 46.96 FPS
 before preprocessing, state packing, mask transfer, ROS, and camera delivery.
 Track batch 2/4 is slower than two/four batch-1 calls, so the next scheduler
-candidate should use batch 1 for tracking on Thor and measure the complete
-multi-object pipeline before promotion.
+candidate uses batch 1 for tracking on Thor in `eb35090`. It still requires a
+complete multi-object pipeline measurement before promotion.
 
 Prompt parity used `videos/test1.mov` and `videos/test2.mov`, frames
 0/15/30/45, identical normalized prompts, threshold zero, and the same
@@ -151,12 +151,45 @@ candidate masks contained 2,293 and 4,151 foreground pixels. This localizes the
 next precision experiment to point multimask scoring/selection and decoder
 normalization instead of reverting the TinyViT encoder to FP32.
 
+## Three-encoder FP16 comparison
+
+TV11M and TV21M export/build reused the three downstream graphs and engines
+only after downstream checkpoint, ONNX, engine, precision, and Thor device
+checks passed. All three bundles point to the same downstream engine inodes.
+
+| Encoder | ONNX size | Engine build | Engine size | Mean / p90 / p99 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| TV5M | 12.5 MB | 392.305 s | 13.8 MB | 6.358 / 6.476 / 6.534 |
+| TV11M | 18.4 MB | 419.297 s | 28.2 MB | 7.359 / 7.471 / 7.577 |
+| TV21M | 80.3 MB | 408.382 s | 38.3 MB | 14.375 / 14.563 / 14.989 |
+
+Using the shared 14.967 ms batch-1 track engine, the engine-only single-object
+steady-state estimates are 21.32 ms (46.9 FPS), 22.33 ms (44.8 FPS), and
+29.34 ms (34.1 FPS) for TV5M/11M/21M respectively.
+
+| Encoder | Point mean / minimum IoU | Box mean / minimum IoU | FP16 status |
+| --- | ---: | ---: | --- |
+| TV5M | 0.9315 / 0.4736 | 0.9940 / 0.9810 | Point fails |
+| TV11M | 0.9962 / 0.9911 | 0.9979 / 0.9917 | Pass |
+| TV21M | 0.9908 / 0.9529 | 0.9962 / 0.9896 | Pass |
+
+The first TV5M point candidate promoted only three standard
+`torch.nn.LayerNorm` modules to FP32. It left seven `LayerNorm2d` ReduceMean
+operations in FP16, retained TensorRT's overflow warning, and produced
+2.377 ms point latency with mean/minimum IoU 0.9316/0.4719. It is rejected.
+The next candidate also promotes the seven SAM2 `LayerNorm2d` Reduce/Pow
+operations; ONNX inspection confirms zero FP16 ReduceMean nodes in the point
+graph before engine build.
+
 ## Camera latency versus FPS check
 
-Commit `eade8e8` separates three quantities that were easy to confuse:
+Commit `eade8e8` separates three quantities that were easy to confuse. A
+follow-up check found that capacity still used arrival-to-completion latency,
+which includes queue wait. The corrected trace therefore records
+`worker_total_ms` separately:
 
-- `processing_capacity_fps`: reciprocal of the current frame's callback
-  latency;
+- `processing_capacity_fps`: reciprocal of the current frame's
+  `worker_total_ms`, excluding queue wait;
 - `processed_fps`: reciprocal of the interval between processed frame starts;
 - summary `throughput_fps`: interval count divided by total measured interval
   duration.
@@ -169,7 +202,7 @@ throughput. A 640x480 RGB8, nominal 15 FPS, one-object box run produced:
 | Object frames | 42 |
 | Mean / p50 / p90 / p99 inference | 40.47 / 37.40 / 49.62 / 79.79 ms |
 | Mean / p50 / p90 / p99 callback | 40.77 / 37.75 / 49.94 / 80.14 ms |
-| Capacity from mean callback | 24.53 FPS |
+| Capacity from mean callback (legacy run) | 24.53 FPS |
 | Measured throughput | 1.98 FPS |
 | Frame interval p50 / p90 / max | 200.11 / 1601.49 / 3069.04 ms |
 | Mean source-to-result age | 100.53 ms |
@@ -179,7 +212,9 @@ Camera timestamp intervals and worker intervals correlated at `0.9999998`; the
 mean absolute difference was 0.235 ms. The throughput loss is therefore
 upstream camera/USB delivery, not TensorRT latency or latest-frame queue loss.
 The driver reported USB 2.1 and warned about reduced performance. Repeat the
-same run after the D455F negotiates USB 3 before recording final camera FPS.
+same run with the corrected worker metric and after the D455F negotiates USB 3
+before recording final camera FPS. The correction has negligible effect on
+this legacy run because its measured queue wait was negligible.
 
 Artifacts remain ignored under:
 
