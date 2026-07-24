@@ -805,8 +805,14 @@ ros2 launch sam2_trt_ros interactive_realsense.launch.py \
 
 從 SSH 啟動到 Thor 的既有桌面時，另外設定該桌面的 `DISPLAY`、
 `XDG_RUNTIME_DIR` 與 `DBUS_SESSION_BUS_ADDRESS`。`q` 只關閉 viewer；
-在 launch terminal 按 `Ctrl+C` 才會一起停止 camera 與 tracker。每個 click
-或 drag 會新增 object，最多八個。
+在 launch terminal 按 `Ctrl+C` 才會一起停止 camera 與 tracker。預設每個新
+click/drag 會先 reset 再建立單一 object，符合互動選取時反覆改 prompt 的
+預期。需要最多八個 objects 的累加模式時傳
+`replace_on_prompt:=false`。
+
+Viewer 依 `header.stamp` 配對 image、result 與所有 object masks；同一 frame
+的預期 masks 全部到齊後才提交新 overlay。不要在 result 先到時先顯示 raw
+frame，否則 raw/mask 會交替造成視覺閃爍。
 
 ## 12. 效能記錄方式
 

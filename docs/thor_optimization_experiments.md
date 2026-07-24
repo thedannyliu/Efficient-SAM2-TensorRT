@@ -228,6 +228,17 @@ observed intervals ranged from 66.5 ms to 10.21 s, confirming that the
 remaining FPS deficit is irregular upstream delivery rather than TensorRT
 service time or a metric formula error.
 
+After moving the D455F to USB-A, Thor negotiated USB 3.2 at 5000 Mbit/s and
+published 1280x720 RGB8 at a stable 29.99 FPS. The first interactive viewer
+implementation exposed a separate display bug: `/sam/result_json` could
+arrive before `/sam/object_masks`, causing a raw frame to be displayed before
+the same-stamp mask and producing visible flashing. Repeated test clicks also
+accumulated four objects, increasing TV5M inference to 117--126 ms and reducing
+tracking to about 8 FPS. The corrected viewer waits for every object mask
+listed by the same-stamp result and replaces the current object on each new
+prompt by default. This is a visualization synchronization fix, not a
+TensorRT precision or engine change.
+
 Artifacts remain ignored under:
 
 ```text

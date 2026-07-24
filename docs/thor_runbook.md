@@ -135,7 +135,10 @@ ros2 launch sam2_trt_ros interactive_realsense.launch.py \
 
 Click for a point, drag for a box, press `r` to reset all objects, and press
 `q`/`Esc` to close the viewer. Visualization is a separate ROS subscriber;
-the C++ TensorRT trace remains the latency source of truth.
+the C++ TensorRT trace remains the latency source of truth. A new prompt
+replaces the current object by default; use `replace_on_prompt:=false` only
+for intentional multi-object accumulation. The viewer waits for every mask
+listed by the same-stamp result before swapping the displayed overlay.
 
 ## 5. Performance acceptance
 
