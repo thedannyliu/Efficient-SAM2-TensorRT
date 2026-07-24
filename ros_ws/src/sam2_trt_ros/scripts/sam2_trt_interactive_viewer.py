@@ -359,8 +359,6 @@ class InteractiveViewer(Node):
             self.present_times.append(display_start)
             self.last_presented_stamp = self.latest_overlay_stamp
         frame = self.latest_overlay.copy()
-        self.draw_interaction(frame)
-        self.draw_metrics(frame)
         height, width = frame.shape[:2]
         scale = self.display_scale
         if self.display_max_width > 0:
@@ -372,6 +370,8 @@ class InteractiveViewer(Node):
                 (max(1, int(width * scale)), max(1, int(height * scale))),
                 interpolation=cv2.INTER_AREA,
             )
+        self.draw_interaction(frame)
+        self.draw_metrics(frame)
         cv2.imshow(self.window_name, frame)
         key = cv2.waitKey(1) & 0xFF
         self.display_ms = (perf_counter() - display_start) * 1000.0
