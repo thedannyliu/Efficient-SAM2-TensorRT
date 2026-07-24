@@ -328,6 +328,7 @@ def export_bundle(
     distill_root: str | Path | None,
     device: str = "cuda",
     dtype: str = "fp32",
+    reuse_encoder_dir: str | Path | None = None,
     reuse_downstream_dir: str | Path | None = None,
     reuse_downstream_roles: Sequence[str] = (),
     fp32_layernorm_roles: Sequence[str] = (),
@@ -339,6 +340,8 @@ def export_bundle(
     unknown_roles = set(fp32_layernorm_roles).difference(valid_roles)
     if unknown_roles:
         raise ValueError(f"unknown FP32 LayerNorm roles: {sorted(unknown_roles)}")
+    if reuse_encoder_dir and "encoder" in fp32_layernorm_roles:
+        raise ValueError("encoder cannot be reused and exported with FP32 LayerNorm")
     valid_downstream_roles = valid_roles.difference({"encoder"})
     unknown_reuse_roles = set(reuse_downstream_roles).difference(valid_downstream_roles)
     if unknown_reuse_roles:
@@ -386,21 +389,32 @@ def export_bundle(
         common_outputs = [
             "mask_logits", "iou", "object_pointer", "object_score", "new_memory", "new_memory_position"
         ]
-        with (
-            fp32_layer_norm_export(torch, encoder_module)
-            if "encoder" in fp32_layernorm_roles
-            else contextlib.nullcontext()
-        ):
-            _export_one(
-                torch,
-                encoder_module,
-                (dummy,),
-                output / "encoder.onnx",
-                ["image"],
-                ["high_res_s0", "high_res_s1", "image_embedding", "image_position"],
-                {},
-                exporter=spec.encoder_exporter,
-            )
+        if reuse_encoder_dir:
+            source_encoder = Path(reuse_encoder_dir).resolve() / "encoder.onnx"
+            if not source_encoder.is_file():
+                raise FileNotFoundError(f"reused encoder graph is missing: {source_encoder}")
+            destination = output / "encoder.onnx"
+            destination.unlink(missing_ok=True)
+            try:
+                os.link(source_encoder, destination)
+            except OSError:
+                shutil.copy2(source_encoder, destination)
+        else:
+            with (
+                fp32_layer_norm_export(torch, encoder_module)
+                if "encoder" in fp32_layernorm_roles
+                else contextlib.nullcontext()
+            ):
+                _export_one(
+                    torch,
+                    encoder_module,
+                    (dummy,),
+                    output / "encoder.onnx",
+                    ["image"],
+                    ["high_res_s0", "high_res_s1", "image_embedding", "image_position"],
+                    {},
+                    exporter=spec.encoder_exporter,
+                )
 
         export_batch = 2
         high0 = torch.zeros(export_batch, 32, 256, 256, device=device, dtype=torch_dtype)
@@ -506,6 +520,9 @@ def export_bundle(
     manifest.environment["export_dtype"] = dtype
     manifest.environment["reused_downstream_dir"] = (
         os.fspath(Path(reuse_downstream_dir).resolve()) if reuse_downstream_dir else None
+    )
+    manifest.environment["reused_encoder_dir"] = (
+        os.fspath(Path(reuse_encoder_dir).resolve()) if reuse_encoder_dir else None
     )
     manifest.environment["reused_downstream_roles"] = sorted(selected_reuse_roles)
     manifest.environment["task_model_load"] = task_load_summary

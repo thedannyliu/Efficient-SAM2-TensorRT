@@ -42,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--device", default="cuda")
     export.add_argument("--dtype", choices=("fp32", "fp16", "bf16"), default="fp32")
     export.add_argument("--reuse-downstream-dir")
+    export.add_argument("--reuse-encoder-dir")
     export.add_argument(
         "--reuse-downstream-role",
         action="append",
@@ -157,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             distill_root=args.distill_root,
             device=args.device,
             dtype=args.dtype,
+            reuse_encoder_dir=args.reuse_encoder_dir,
             reuse_downstream_dir=args.reuse_downstream_dir,
             reuse_downstream_roles=tuple(args.reuse_downstream_role or ()),
             fp32_layernorm_roles=tuple(args.fp32_layernorm_role or ()),
