@@ -15,7 +15,7 @@ def generate_launch_description():
             DeclareLaunchArgument("image_topic", default_value="/camera/camera/color/image_raw"),
             DeclareLaunchArgument("max_objects", default_value="8"),
             DeclareLaunchArgument("track_concurrency", default_value="8"),
-            DeclareLaunchArgument("pipeline_overlap", default_value="true"),
+            DeclareLaunchArgument("pipeline_overlap", default_value="false"),
             DeclareLaunchArgument("trace_path", default_value=""),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(

@@ -37,7 +37,7 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
     const auto max_objects = declare_parameter("max_objects", 8);
     const auto track_concurrency = declare_parameter("track_concurrency", max_objects);
-    pipeline_overlap_ = declare_parameter("pipeline_overlap", true);
+    pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
     const auto trace_path = declare_parameter("trace_path", "");
     const auto preview_width = declare_parameter("preview_width", 640);
     const auto preview_height = declare_parameter("preview_height", 360);
