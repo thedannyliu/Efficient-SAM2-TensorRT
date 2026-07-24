@@ -15,5 +15,8 @@ target_link_libraries(sam2_trt_node sam2_trt::sam2_trt_core)
 ament_target_dependencies(sam2_trt_node
   rclcpp sensor_msgs std_msgs std_srvs sam2_trt_msgs)
 install(TARGETS sam2_trt_node DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/sam2_trt_interactive_viewer.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME sam2_trt_interactive_viewer)
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 ament_package()
