@@ -19,6 +19,7 @@ def generate_launch_description():
             DeclareLaunchArgument("display_scale", default_value="1.0"),
             DeclareLaunchArgument("display_max_width", default_value="1280"),
             DeclareLaunchArgument("replace_on_prompt", default_value="true"),
+            DeclareLaunchArgument("draw_contours", default_value="false"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution(
@@ -60,6 +61,9 @@ def generate_launch_description():
                         ),
                         "replace_on_prompt": ParameterValue(
                             LaunchConfiguration("replace_on_prompt"), value_type=bool
+                        ),
+                        "draw_contours": ParameterValue(
+                            LaunchConfiguration("draw_contours"), value_type=bool
                         ),
                     }
                 ],

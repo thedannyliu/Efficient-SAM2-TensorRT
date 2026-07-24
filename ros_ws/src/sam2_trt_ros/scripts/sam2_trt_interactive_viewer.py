@@ -42,6 +42,7 @@ class InteractiveViewer(Node):
         self.declare_parameter("display_max_width", 1280)
         self.declare_parameter("box_drag_min_pixels", 5.0)
         self.declare_parameter("replace_on_prompt", True)
+        self.declare_parameter("draw_contours", False)
 
         self.bridge = CvBridge()
         self.window_name = str(self.get_parameter("window_name").value)
@@ -49,6 +50,7 @@ class InteractiveViewer(Node):
         self.display_max_width = int(self.get_parameter("display_max_width").value)
         self.box_drag_min_pixels = float(self.get_parameter("box_drag_min_pixels").value)
         self.replace_on_prompt = bool(self.get_parameter("replace_on_prompt").value)
+        self.draw_contours = bool(self.get_parameter("draw_contours").value)
         self.current_scale = 1.0
         self.frames: dict[int, np.ndarray] = {}
         self.frame_order: deque[int] = deque()
@@ -59,6 +61,12 @@ class InteractiveViewer(Node):
         self.latest_overlay_stamp = 0
         self.latest_result: dict[str, object] = {}
         self.result_times: deque[float] = deque(maxlen=120)
+        self.tracker_stamps: deque[float] = deque(maxlen=120)
+        self.present_times: deque[float] = deque(maxlen=120)
+        self.last_presented_stamp = 0
+        self.compose_ms = 0.0
+        self.display_ms = 0.0
+        self.last_metrics_log = perf_counter()
         self.drag_start: tuple[float, float] | None = None
         self.drag_current: tuple[float, float] | None = None
         self.prompt_marker: tuple[str, tuple[float, ...], float] | None = None
@@ -122,6 +130,11 @@ class InteractiveViewer(Node):
         self.results[stamp] = result
         self.latest_result = result
         self.result_times.append(perf_counter())
+        stamp_seconds = stamp * 1e-9
+        if stamp > 0 and (
+            not self.tracker_stamps or stamp_seconds > self.tracker_stamps[-1]
+        ):
+            self.tracker_stamps.append(stamp_seconds)
         self.compose_overlay_if_ready(stamp)
 
     def compose_overlay_if_ready(self, stamp: int) -> None:
@@ -133,6 +146,7 @@ class InteractiveViewer(Node):
         available = self.masks.get(stamp, {})
         if not all_masks_ready(expected, available):
             return
+        compose_start = perf_counter()
         overlay = frame.copy()
         for object_id in expected:
             mask = available[object_id]
@@ -141,10 +155,16 @@ class InteractiveViewer(Node):
             overlay[selected] = (
                 overlay[selected].astype(np.float32) * 0.55 + color * 0.45
             ).astype(np.uint8)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(overlay, contours, -1, tuple(int(value) for value in color), 2)
+            if self.draw_contours:
+                contours, _ = cv2.findContours(
+                    mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                cv2.drawContours(
+                    overlay, contours, -1, tuple(int(value) for value in color), 2
+                )
         self.latest_overlay = overlay
         self.latest_overlay_stamp = stamp
+        self.compose_ms = (perf_counter() - compose_start) * 1000.0
 
     def on_mouse(self, event: int, x: int, y: int, flags: int, _: object) -> None:
         if self.latest_frame is None:
@@ -257,6 +277,10 @@ class InteractiveViewer(Node):
     def display(self) -> None:
         if self.latest_overlay is None:
             return
+        display_start = perf_counter()
+        if self.latest_overlay_stamp != self.last_presented_stamp:
+            self.present_times.append(display_start)
+            self.last_presented_stamp = self.latest_overlay_stamp
         frame = self.latest_overlay.copy()
         self.draw_interaction(frame)
         self.draw_metrics(frame)
@@ -273,6 +297,17 @@ class InteractiveViewer(Node):
             )
         cv2.imshow(self.window_name, frame)
         key = cv2.waitKey(1) & 0xFF
+        self.display_ms = (perf_counter() - display_start) * 1000.0
+        now = perf_counter()
+        if now - self.last_metrics_log >= 2.0:
+            self.get_logger().info(
+                "viewer_metrics "
+                f"tracker_fps={event_rate_hz(self.tracker_stamps):.2f} "
+                f"ui_receive_fps={event_rate_hz(self.result_times):.2f} "
+                f"present_fps={event_rate_hz(self.present_times):.2f} "
+                f"compose_ms={self.compose_ms:.2f} display_ms={self.display_ms:.2f}"
+            )
+            self.last_metrics_log = now
         if key in {27, ord("q")}:
             rclpy.shutdown()
         elif key == ord("r"):
@@ -294,18 +329,25 @@ class InteractiveViewer(Node):
 
     def draw_metrics(self, frame: np.ndarray) -> None:
         result = self.latest_result
-        output_fps = event_rate_hz(self.result_times)
+        tracker_fps = event_rate_hz(self.tracker_stamps)
+        receive_fps = event_rate_hz(self.result_times)
+        present_fps = event_rate_hz(self.present_times)
         objects = len(result.get("objects", []))
-        line1 = f"{self.status} | objects={objects} | output={output_fps:.1f} FPS"
+        line1 = f"{self.status} | objects={objects}"
         line2 = (
+            f"tracker={tracker_fps:.1f}  UI-rx={receive_fps:.1f}  "
+            f"present={present_fps:.1f} FPS"
+        )
+        line3 = (
             f"infer={float(result.get('inference_ms', 0.0)):.1f} ms  "
-            f"worker={float(result.get('worker_total_ms', 0.0)):.1f} ms  "
             f"source-age={float(result.get('source_age_ms', 0.0)):.1f} ms  "
+            f"compose={self.compose_ms:.1f} ms  display={self.display_ms:.1f} ms  "
             f"drops={int(result.get('dropped_frames', 0))}"
         )
-        cv2.rectangle(frame, (0, 0), (frame.shape[1], 66), (0, 0, 0), -1)
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], 92), (0, 0, 0), -1)
         cv2.putText(frame, line1, (12, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         cv2.putText(frame, line2, (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        cv2.putText(frame, line3, (12, 79), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         cv2.putText(
             frame,
             "click: point | drag: box | r: reset | q: quit",
