@@ -48,6 +48,19 @@ class RealRopeTest(unittest.TestCase):
         torch.testing.assert_close(actual[0], expected[0], rtol=1e-6, atol=1e-6)
         torch.testing.assert_close(actual[1], expected[1], rtol=1e-6, atol=1e-6)
 
+    def test_matches_one_key_repetition(self):
+        torch.manual_seed(13)
+        query = torch.randn(1, 2, 16, 8)
+        key = torch.randn(1, 2, 16, 8)
+        phase = torch.randn(16, 4)
+        frequencies = torch.polar(torch.ones_like(phase), phase)
+        expected = complex_reference(query, key, frequencies, True)
+        actual = apply_rotary_enc_real(
+            query, key, frequencies.real, frequencies.imag, True
+        )
+        torch.testing.assert_close(actual[0], expected[0], rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(actual[1], expected[1], rtol=1e-6, atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

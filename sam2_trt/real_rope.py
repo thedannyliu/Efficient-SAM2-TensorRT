@@ -27,8 +27,8 @@ def apply_rotary_enc_real(xq, xk, cosine, sine, repeat_freqs_k=False):
         return query, xk
     if repeat_freqs_k:
         repetitions = xk.shape[-2] // xq.shape[-2]
-        q_cos = q_cos.unsqueeze(2).expand(-1, -1, repetitions, -1, -1).flatten(2, 3)
-        q_sin = q_sin.unsqueeze(2).expand(-1, -1, repetitions, -1, -1).flatten(2, 3)
+        q_cos = q_cos.repeat(1, 1, repetitions, 1)
+        q_sin = q_sin.repeat(1, 1, repetitions, 1)
     return query, rotate(xk, q_cos, q_sin)
 
 
