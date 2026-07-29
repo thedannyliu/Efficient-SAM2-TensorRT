@@ -109,6 +109,19 @@ ros2 service call /sam/add_object sam2_trt_msgs/srv/AddObject \
 ros2 service call /sam/reset std_srvs/srv/Trigger '{}'
 ```
 
+The standalone node can switch between compatible bundles without restarting
+ROS. It builds the replacement tracker first and swaps it in only after every
+TensorRT engine loads successfully; switching clears the tracking state.
+
+```bash
+ros2 service call /sam/switch_model sam2_trt_msgs/srv/SwitchModel \
+  "{model_id: sam2.1-tinyvit-11m, bundle_dir: '$SAM2_TRT_ROOT/bundles/sam2.1-tinyvit-11m/fp16_aux0', precision: fp16}"
+```
+
+The response records `load_ms` and the active model. Keeping only one tracker
+resident avoids duplicating the large prompt/track TensorRT contexts shared by
+the 5M, 11M, and 21M variants.
+
 Topics:
 
 - `/segmentation_mask`: first object's `mono8` mask for compatibility;

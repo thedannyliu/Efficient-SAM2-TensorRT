@@ -2,6 +2,7 @@
 
 #include "sam2_trt/tracker.hpp"
 #include "sam2_trt_msgs/srv/add_object.hpp"
+#include "sam2_trt_msgs/srv/switch_model.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
@@ -31,12 +32,12 @@ class Sam2TrtNode final : public rclcpp::Node {
 
   explicit Sam2TrtNode(const rclcpp::NodeOptions& options)
       : Node("sam2_trt", options) {
-    declare_parameter("model_id", "sam2.1-hiera-large");
+    model_id_ = declare_parameter("model_id", "sam2.1-hiera-large");
     const auto bundle = declare_parameter("bundle_dir", "");
-    const auto precision = declare_parameter("precision", "fp32");
+    precision_ = declare_parameter("precision", "fp32");
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
-    const auto max_objects = declare_parameter("max_objects", 8);
-    const auto track_concurrency = declare_parameter("track_concurrency", max_objects);
+    max_objects_ = declare_parameter("max_objects", 8);
+    track_concurrency_ = declare_parameter("track_concurrency", max_objects_);
     pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
     const auto trace_path = declare_parameter("trace_path", "");
     const auto preview_width = declare_parameter("preview_width", 640);
@@ -44,8 +45,9 @@ class Sam2TrtNode final : public rclcpp::Node {
     declare_parameter("queue_policy", "latest");
     declare_parameter("enable_overlay", false);
     if (bundle.empty()) throw std::invalid_argument("bundle_dir parameter is required");
+    bundle_dir_ = bundle;
     tracker_ = std::make_unique<sam2_trt::Tracker>(
-        bundle, precision, max_objects, track_concurrency);
+        bundle_dir_, precision_, max_objects_, track_concurrency_);
     if (!trace_path.empty()) {
       const std::filesystem::path path(trace_path);
       if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
@@ -103,6 +105,13 @@ class Sam2TrtNode final : public rclcpp::Node {
           pipeline_pending_.reset();
           response->success = true;
         });
+    switch_model_service_ = create_service<sam2_trt_msgs::srv::SwitchModel>(
+        "/sam/switch_model",
+        [this](
+            sam2_trt_msgs::srv::SwitchModel::Request::SharedPtr request,
+            sam2_trt_msgs::srv::SwitchModel::Response::SharedPtr response) {
+          switch_model(*request, *response);
+        });
     preview_worker_ = std::jthread(
         [this](std::stop_token token) { preview_worker(token); });
     worker_ = std::jthread([this](std::stop_token token) { worker(token); });
@@ -128,6 +137,58 @@ class Sam2TrtNode final : public rclcpp::Node {
 
   static double milliseconds(SteadyClock::duration duration) {
     return std::chrono::duration<double, std::milli>(duration).count();
+  }
+
+  void switch_model(
+      const sam2_trt_msgs::srv::SwitchModel::Request& request,
+      sam2_trt_msgs::srv::SwitchModel::Response& response) {
+    if (request.model_id.empty() || request.bundle_dir.empty() ||
+        request.precision.empty()) {
+      response.message = "model_id, bundle_dir, and precision are required";
+      response.active_model_id = model_id_;
+      return;
+    }
+    {
+      std::lock_guard lock(tracker_mutex_);
+      if (request.model_id == model_id_ &&
+          request.bundle_dir == bundle_dir_ &&
+          request.precision == precision_) {
+        response.success = true;
+        response.active_model_id = model_id_;
+        response.message = model_id_ + " is already active";
+        return;
+      }
+    }
+
+    const auto start = SteadyClock::now();
+    try {
+      auto replacement = std::make_unique<sam2_trt::Tracker>(
+          request.bundle_dir, request.precision, max_objects_,
+          track_concurrency_);
+      {
+        std::lock_guard lock(tracker_mutex_);
+        tracker_.swap(replacement);
+        model_id_ = request.model_id;
+        bundle_dir_ = request.bundle_dir;
+        precision_ = request.precision;
+        pipeline_pending_.reset();
+        replacement.reset();
+      }
+      response.success = true;
+      response.active_model_id = model_id_;
+      response.load_ms = milliseconds(SteadyClock::now() - start);
+      response.message = "switched to " + model_id_;
+      RCLCPP_INFO(
+          get_logger(), "Switched to %s in %.1f ms", model_id_.c_str(),
+          response.load_ms);
+    } catch (const std::exception& error) {
+      response.active_model_id = model_id_;
+      response.load_ms = milliseconds(SteadyClock::now() - start);
+      response.message = error.what();
+      RCLCPP_ERROR(
+          get_logger(), "Model switch to %s failed after %.1f ms: %s",
+          request.model_id.c_str(), response.load_ms, error.what());
+    }
   }
 
   sensor_msgs::msg::Image make_preview(
@@ -263,6 +324,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto inference_start = color_end;
     std::vector<sam2_trt::ObjectMask> masks;
     PendingFrame output_pending;
+    sam2_trt::TrackerTimings tracker_timings;
+    std::string active_model_id;
     {
       std::lock_guard lock(tracker_mutex_);
       if (pipeline_overlap_) {
@@ -282,9 +345,10 @@ class Sam2TrtNode final : public rclcpp::Node {
             rgb, input_frame->width, input_frame->height, stride);
         output_pending = std::move(pending);
       }
+      tracker_timings = tracker_->last_timings();
+      active_model_id = model_id_;
     }
     const auto& frame = output_pending.message;
-    const auto tracker_timings = tracker_->last_timings();
     const auto inference_end = SteadyClock::now();
     const auto mask_publish_start = inference_end;
     const bool publish_legacy_mask = mask_publisher_->get_subscription_count() > 0;
@@ -318,6 +382,7 @@ class Sam2TrtNode final : public rclcpp::Node {
     json << std::fixed << std::setprecision(3);
     json << "{\"stamp_ns\":" << rclcpp::Time(frame->header.stamp).nanoseconds()
          << ",\"frame_index\":" << processed_frames_++
+         << ",\"model_id\":\"" << active_model_id << '"'
          << ",\"source_width\":" << frame->width
          << ",\"source_height\":" << frame->height
          << ",\"objects\":[";
@@ -377,6 +442,8 @@ class Sam2TrtNode final : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr result_publisher_;
   rclcpp::Service<sam2_trt_msgs::srv::AddObject>::SharedPtr add_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
+  rclcpp::Service<sam2_trt_msgs::srv::SwitchModel>::SharedPtr
+      switch_model_service_;
   std::mutex tracker_mutex_;
   std::mutex frame_mutex_;
   std::mutex preview_mutex_;
@@ -393,7 +460,12 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::optional<SteadyClock::time_point> previous_worker_start_;
   int preview_width_{};
   int preview_height_{};
+  int max_objects_{};
+  int track_concurrency_{};
   bool pipeline_overlap_{};
+  std::string model_id_;
+  std::string bundle_dir_;
+  std::string precision_;
   std::ofstream trace_;
   std::jthread preview_worker_;
   std::jthread worker_;
