@@ -31,7 +31,9 @@ std::size_t element_size(nvinfer1::DataType dtype);
 
 class Engine {
  public:
-  explicit Engine(const std::string& plan_path, bool profile_zero_only = false);
+  explicit Engine(
+      const std::string& plan_path, bool profile_zero_only = false,
+      int context_copies = 1);
   ~Engine();
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -40,7 +42,8 @@ class Engine {
       const std::map<std::string, DeviceTensor>& inputs, int profile, cudaStream_t stream);
   void run_into(
       const std::map<std::string, DeviceTensor>& inputs, int profile,
-      cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs);
+      cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs,
+      int context_copy = 0);
   nvinfer1::DataType tensor_dtype(const std::string& name) const;
 
  private:
@@ -49,6 +52,8 @@ class Engine {
   nvinfer1::IRuntime* runtime_{};
   nvinfer1::ICudaEngine* engine_{};
   std::vector<nvinfer1::IExecutionContext*> contexts_;
+  int profile_count_{};
+  int context_copies_{};
 };
 
 }  // namespace sam2_trt

@@ -69,21 +69,27 @@ static std::vector<char> read_plan(const std::string& path) {
   return payload;
 }
 
-Engine::Engine(const std::string& plan_path, bool profile_zero_only)
-    : logger_(std::make_unique<Logger>()) {
+Engine::Engine(
+    const std::string& plan_path, bool profile_zero_only, int context_copies)
+    : logger_(std::make_unique<Logger>()),
+      context_copies_(context_copies) {
+  if (context_copies_ < 1)
+    throw std::invalid_argument("context_copies must be positive");
   const auto payload = read_plan(plan_path);
   runtime_ = nvinfer1::createInferRuntime(*logger_);
   if (!runtime_) throw std::runtime_error("createInferRuntime failed");
   engine_ = runtime_->deserializeCudaEngine(payload.data(), payload.size());
   if (!engine_) throw std::runtime_error("deserializeCudaEngine failed for " + plan_path);
-  const int profiles = profile_zero_only
+  profile_count_ = profile_zero_only
       ? 1
       : std::max(1, engine_->getNbOptimizationProfiles());
-  contexts_.reserve(profiles);
-  for (int index = 0; index < profiles; ++index) {
-    auto* context = engine_->createExecutionContext();
-    if (!context) throw std::runtime_error("createExecutionContext failed");
-    contexts_.push_back(context);
+  contexts_.reserve(profile_count_ * context_copies_);
+  for (int profile = 0; profile < profile_count_; ++profile) {
+    for (int copy = 0; copy < context_copies_; ++copy) {
+      auto* context = engine_->createExecutionContext();
+      if (!context) throw std::runtime_error("createExecutionContext failed");
+      contexts_.push_back(context);
+    }
   }
 }
 
@@ -120,11 +126,16 @@ std::map<std::string, DeviceTensor> Engine::run(
 
 void Engine::run_into(
     const std::map<std::string, DeviceTensor>& inputs, int profile,
-    cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs) {
-  if (profile < 0 || profile >= static_cast<int>(contexts_.size()))
+    cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs,
+    int context_copy) {
+  if (profile < 0 || profile >= profile_count_)
     throw std::out_of_range("invalid TensorRT optimization profile");
-  auto* context = contexts_[profile];
-  if (contexts_.size() > 1 && !context->setOptimizationProfileAsync(profile, stream))
+  if (context_copy < 0 || context_copy >= context_copies_)
+    throw std::out_of_range("invalid TensorRT execution context copy");
+  auto* context = contexts_[
+      static_cast<std::size_t>(profile * context_copies_ + context_copy)];
+  if (profile_count_ > 1 &&
+      !context->setOptimizationProfileAsync(profile, stream))
     throw std::runtime_error("setOptimizationProfileAsync failed");
 
   for (const auto& [name, tensor] : inputs) {

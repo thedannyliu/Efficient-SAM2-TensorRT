@@ -122,7 +122,7 @@ struct Tracker::Impl {
   Engine encoder;
   Engine point_prompt;
   Engine box_prompt;
-  std::vector<std::unique_ptr<Engine>> track_engines;
+  Engine track;
   std::array<std::map<std::string, DeviceTensor>, 2> encoder_outputs;
   std::map<std::string, DeviceTensor> point_prompt_outputs;
   std::map<std::string, DeviceTensor> box_prompt_outputs;
@@ -153,6 +153,10 @@ struct Tracker::Impl {
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
+        track(
+            (std::filesystem::path(root) /
+             ("track_step." + precision + ".engine")).string(),
+            true, maximum),
         maximum_objects(maximum),
         track_concurrency(concurrency) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
@@ -161,15 +165,11 @@ struct Tracker::Impl {
     check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     for (auto& event : encoded_ready)
       check_cuda(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-    const auto track_path =
-        (std::filesystem::path(root) / ("track_step." + precision + ".engine")).string();
-    track_engines.reserve(static_cast<std::size_t>(maximum));
+    const auto dtype = track.tensor_dtype("mask_memory");
     for (int index = 0; index < maximum; ++index) {
       check_cuda(cudaStreamCreateWithFlags(
           &track_streams[static_cast<std::size_t>(index)],
           cudaStreamNonBlocking));
-      track_engines.push_back(std::make_unique<Engine>(track_path, true));
-      const auto dtype = track_engines.back()->tensor_dtype("mask_memory");
       auto& scratch = track_scratch[static_cast<std::size_t>(index)];
       const auto object_stream = track_streams[static_cast<std::size_t>(index)];
       scratch.memory = allocate_tensor(
@@ -209,7 +209,6 @@ struct Tracker::Impl {
       cudaStreamSynchronize(object_stream);
       cudaStreamDestroy(object_stream);
     }
-    track_engines.clear();
     for (auto event : encoded_ready) cudaEventDestroy(event);
     cudaEventDestroy(gpu_end);
     cudaEventDestroy(encoder_end);
@@ -379,7 +378,6 @@ struct Tracker::Impl {
       int width, int height, cudaEvent_t ready_event) {
     const auto slot = static_cast<std::size_t>(group.front()->id - 1);
     auto execution_stream = track_streams.at(slot);
-    auto& track = *track_engines.at(slot);
     const int batch = padded_object_batch(static_cast<int>(group.size()));
     if (batch != 1)
       throw std::invalid_argument("parallel track slots require batch 1");
@@ -450,7 +448,8 @@ struct Tracker::Impl {
     inputs["pointer_frame_distance"] = std::move(distance_tensor);
     check_cuda(cudaStreamWaitEvent(execution_stream, ready_event, 0));
     auto& output = track_outputs.at(slot);
-    track.run_into(inputs, 0, execution_stream, output);
+    track.run_into(
+        inputs, 0, execution_stream, output, static_cast<int>(slot));
     for (std::size_t index = 0; index < group.size(); ++index)
       save_outputs(
           *group[index], output, index, false, execution_stream);
