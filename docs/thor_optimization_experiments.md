@@ -319,6 +319,33 @@ stutter is a combination of irregular RealSense delivery and the CPU/memory
 cost of copying, compositing, and presenting ROS images; it is not caused by
 motion making the TensorRT graph substantially slower.
 
+## Unified GI-to-SAM2 shared camera transport
+
+The SAM3/SAM2 unified UI originally serialized each 1280x720 BGR8 frame as a
+2.76 MB ROS message from a Python MJPEG adapter to this C++ node. The adapter
+received about 30 FPS, but the SAM2 result stream completed only 15.506 FPS
+with no objects. Commit `6f1c15c` adds an optional locked latest-frame reader
+under `/dev/shm`; the normal ROS subscription remains available for frozen
+prompt initialization. SAM3 repo commit `12dc408` supplies that buffer.
+
+The no-object headless result increased to 29.210 FPS (+88.4%) with mean source
+age 19.44 ms. SAM3 commit `8d85337` then uses OpenCV's optimized BGR-to-RGB
+conversion before the shared write, and SAM2 commit `87a4350` consumes the
+shared payload as RGB8. This removes the per-pixel C++ channel loop without
+changing pixel values.
+
+Final displayed one-object results at 1280x720@30, after 100 warm-up and 500
+measured frames:
+
+| Model | FPS | Inference | Source age |
+|---|---:|---:|---:|
+| TV5M | 27.218 | 34.112 ms | 48.303 ms |
+| TV11M | 27.046 | 35.737 ms | 54.154 ms |
+| TV21M | 24.908 | 39.050 ms | 58.135 ms |
+
+The transport is optional: leaving `shared_memory_path` empty preserves the
+original ROS-only camera input.
+
 ## Remaining end-to-end optimization roadmap
 
 The measured single-object headless path is 34.08 ms, while its encoder and
