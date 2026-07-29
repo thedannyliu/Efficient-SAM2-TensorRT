@@ -231,8 +231,10 @@ class Sam2TrtNode final : public rclcpp::Node {
       sensor_msgs::msg::Image::SharedPtr message;
       if (valid) {
         message = std::make_shared<sensor_msgs::msg::Image>();
-        message->header.stamp =
-            rclcpp::Time(static_cast<std::int64_t>(header.stamp_ns)).to_msg();
+        message->header.stamp.sec = static_cast<std::int32_t>(
+            header.stamp_ns / 1'000'000'000ULL);
+        message->header.stamp.nanosec = static_cast<std::uint32_t>(
+            header.stamp_ns % 1'000'000'000ULL);
         message->header.frame_id = "instinctsam_shared";
         message->height = header.height;
         message->width = header.width;
