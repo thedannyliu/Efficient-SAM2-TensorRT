@@ -556,6 +556,33 @@ model switching, but it is not counted as steady-state tracking speedup.
 Ignored traces are under
 `results/benchmarks/shared_context_377dfb0/` on Thor.
 
+## Unified 60 FPS input capacity
+
+The RealSense's supported 60 FPS color profile is 848x480@60; it does not
+offer 1280x720@60. After the licensed vendor runtime's 93.7 s camera-profile
+restart, capture stabilized at 59.74 FPS. The displayed OpenGL UI and
+latest-only shared camera transport remained enabled.
+
+| Encoder | Objects | Completed FPS | Mean inference | Mean source age |
+| --- | ---: | ---: | ---: | ---: |
+| TV5M | 1 | 33.267 | 29.797 ms | 41.686 ms |
+| TV11M | 1 | 32.650 | 30.427 ms | 42.387 ms |
+| TV21M | 1 | 28.872 | 34.445 ms | 46.501 ms |
+| TV5M | 2 | 22.397 | 44.541 ms | 57.422 ms |
+| TV5M | 4 | 11.949 | 83.565 ms | 96.054 ms |
+
+This removes the 30 FPS observation ceiling: TV5M's measured one-object
+processing rate is about 33 FPS, and TV11M is only 1.9% slower. TV21M is
+13.2% slower than TV5M. More input frames do not automatically reduce
+source-age because a new latest frame arrives while inference is active; the
+one-object queue-wait was about 10--11 ms.
+
+A same-profile poll-rate screen compared the original 240 Hz shared-header
+poll with 1000 Hz. Source-age was 41.872 and 41.686 ms respectively (-0.4%),
+while inference varied in the opposite direction. The higher poll rate is
+rejected as noise. SAM3 commit `a60e1cf` keeps the launch argument but restores
+240 Hz as the default.
+
 ## SAM 3.1 Object Multiplex applicability
 
 The official SAM 3.1 release and source were reviewed at upstream commit
