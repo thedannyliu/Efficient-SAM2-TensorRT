@@ -12,9 +12,10 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include <array>
-#include <condition_variable>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -26,6 +27,10 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 class Sam2TrtNode final : public rclcpp::Node {
  public:
   using SteadyClock = std::chrono::steady_clock;
@@ -36,6 +41,13 @@ class Sam2TrtNode final : public rclcpp::Node {
     const auto bundle = declare_parameter("bundle_dir", "");
     precision_ = declare_parameter("precision", "fp32");
     const auto image_topic = declare_parameter("image_topic", "/camera/camera/color/image_raw");
+    shared_memory_path_ = declare_parameter("shared_memory_path", "");
+    const auto shared_memory_poll_hz =
+        declare_parameter("shared_memory_poll_hz", 240.0);
+    if (shared_memory_poll_hz <= 0.0)
+      throw std::invalid_argument("shared_memory_poll_hz must be positive");
+    shared_memory_poll_period_ = std::chrono::microseconds(
+        static_cast<std::int64_t>(1.0e6 / shared_memory_poll_hz));
     max_objects_ = declare_parameter("max_objects", 8);
     track_concurrency_ = declare_parameter("track_concurrency", max_objects_);
     pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
@@ -71,13 +83,7 @@ class Sam2TrtNode final : public rclcpp::Node {
     subscription_ = create_subscription<sensor_msgs::msg::Image>(
         image_topic, rclcpp::SensorDataQoS().keep_last(1),
         [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
-          const auto arrival = SteadyClock::now();
-          {
-            std::lock_guard lock(frame_mutex_);
-            if (latest_) ++dropped_frames_;
-            latest_ = PendingFrame{std::move(message), arrival};
-          }
-          frame_ready_.notify_one();
+          enqueue_frame(std::move(message), SteadyClock::now(), 0.0, false);
         });
     add_service_ = create_service<sam2_trt_msgs::srv::AddObject>(
         "/sam/add_object",
@@ -115,9 +121,17 @@ class Sam2TrtNode final : public rclcpp::Node {
     preview_worker_ = std::jthread(
         [this](std::stop_token token) { preview_worker(token); });
     worker_ = std::jthread([this](std::stop_token token) { worker(token); });
+    if (!shared_memory_path_.empty()) {
+      shared_frame_worker_ = std::jthread(
+          [this](std::stop_token token) { shared_frame_worker(token); });
+      RCLCPP_INFO(
+          get_logger(), "Reading latest camera frame from %s",
+          shared_memory_path_.c_str());
+    }
   }
 
   ~Sam2TrtNode() override {
+    shared_frame_worker_.request_stop();
     worker_.request_stop();
     frame_ready_.notify_all();
     preview_worker_.request_stop();
@@ -128,7 +142,23 @@ class Sam2TrtNode final : public rclcpp::Node {
   struct PendingFrame {
     sensor_msgs::msg::Image::ConstSharedPtr message;
     SteadyClock::time_point arrival;
+    double input_transport_ms{};
+    bool shared_memory{};
   };
+
+#pragma pack(push, 1)
+  struct SharedFrameHeader {
+    char magic[8];
+    std::uint64_t sequence;
+    std::uint64_t stamp_ns;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t stride;
+    std::uint32_t payload_bytes;
+  };
+#pragma pack(pop)
+
+  static_assert(sizeof(SharedFrameHeader) == 40);
 
   struct PreviewJob {
     sensor_msgs::msg::Image::ConstSharedPtr frame;
@@ -137,6 +167,96 @@ class Sam2TrtNode final : public rclcpp::Node {
 
   static double milliseconds(SteadyClock::duration duration) {
     return std::chrono::duration<double, std::milli>(duration).count();
+  }
+
+  void enqueue_frame(
+      sensor_msgs::msg::Image::ConstSharedPtr message,
+      SteadyClock::time_point arrival,
+      double input_transport_ms,
+      bool shared_memory) {
+    {
+      std::lock_guard lock(frame_mutex_);
+      if (latest_) ++dropped_frames_;
+      latest_ = PendingFrame{
+          std::move(message), arrival, input_transport_ms, shared_memory};
+    }
+    frame_ready_.notify_one();
+  }
+
+  static bool read_exact(
+      int file_descriptor, void* destination, std::size_t bytes,
+      off_t offset) {
+    auto* output = static_cast<std::uint8_t*>(destination);
+    std::size_t completed = 0;
+    while (completed < bytes) {
+      const auto count = ::pread(
+          file_descriptor, output + completed, bytes - completed,
+          offset + static_cast<off_t>(completed));
+      if (count <= 0) return false;
+      completed += static_cast<std::size_t>(count);
+    }
+    return true;
+  }
+
+  void shared_frame_worker(std::stop_token token) {
+    int file_descriptor = -1;
+    std::uint64_t last_sequence = 0;
+    while (!token.stop_requested()) {
+      if (file_descriptor < 0) {
+        file_descriptor = ::open(shared_memory_path_.c_str(), O_RDONLY);
+        if (file_descriptor < 0) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          continue;
+        }
+      }
+
+      const auto read_start = SteadyClock::now();
+      if (::flock(file_descriptor, LOCK_SH) != 0) {
+        ::close(file_descriptor);
+        file_descriptor = -1;
+        continue;
+      }
+      SharedFrameHeader header{};
+      bool valid = read_exact(
+          file_descriptor, &header, sizeof(header), 0);
+      valid = valid &&
+          std::memcmp(header.magic, "SAM2RGB1", sizeof(header.magic)) == 0 &&
+          header.sequence != last_sequence &&
+          header.width > 0 && header.height > 0 &&
+          header.stride >= header.width * 3 &&
+          header.payload_bytes ==
+              static_cast<std::uint64_t>(header.stride) * header.height &&
+          header.payload_bytes <= 64U * 1024U * 1024U;
+
+      sensor_msgs::msg::Image::SharedPtr message;
+      if (valid) {
+        message = std::make_shared<sensor_msgs::msg::Image>();
+        message->header.stamp =
+            rclcpp::Time(static_cast<std::int64_t>(header.stamp_ns)).to_msg();
+        message->header.frame_id = "instinctsam_shared";
+        message->height = header.height;
+        message->width = header.width;
+        message->encoding = sensor_msgs::image_encodings::BGR8;
+        message->is_bigendian = false;
+        message->step = header.stride;
+        message->data.resize(header.payload_bytes);
+        valid = read_exact(
+            file_descriptor, message->data.data(), message->data.size(),
+            static_cast<off_t>(sizeof(header)));
+      }
+      ::flock(file_descriptor, LOCK_UN);
+
+      if (valid) {
+        last_sequence = header.sequence;
+        const double transport_ms =
+            milliseconds(SteadyClock::now() - read_start);
+        enqueue_frame(
+            std::move(message), read_start, transport_ms, true);
+      } else {
+        std::this_thread::sleep_for(shared_memory_poll_period_);
+      }
+    }
+    if (file_descriptor >= 0) ::close(file_descriptor);
   }
 
   void switch_model(
@@ -391,6 +511,10 @@ class Sam2TrtNode final : public rclcpp::Node {
       json << masks[index].object_id;
     }
     json << "],\"queue_wait_ms\":" << queue_wait_ms
+         << ",\"input_transport\":\""
+         << (output_pending.shared_memory ? "shared_memory" : "ros_image")
+         << '"'
+         << ",\"input_transport_ms\":" << output_pending.input_transport_ms
          << ",\"pipeline_overlap\":"
          << (pipeline_overlap_ ? "true" : "false")
          << ",\"pipeline_delay_frames\":" << (pipeline_overlap_ ? 1 : 0)
@@ -466,7 +590,10 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::string model_id_;
   std::string bundle_dir_;
   std::string precision_;
+  std::string shared_memory_path_;
+  std::chrono::microseconds shared_memory_poll_period_{};
   std::ofstream trace_;
+  std::jthread shared_frame_worker_;
   std::jthread preview_worker_;
   std::jthread worker_;
 };
