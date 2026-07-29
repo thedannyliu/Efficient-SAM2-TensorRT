@@ -535,6 +535,27 @@ GPU time and 22.051 ms tracking-tail GPU time. Shared input transport is
 0.951 ms and host image staging is 0.182 ms. The common SAM2 tracking tail,
 not ROS transport, remains the largest exact-output optimization target.
 
+## Shared track engine with independent contexts
+
+Commit `377dfb0` replaces eight separately deserialized copies of the same
+`track_step.fp16.engine` with one TensorRT engine and eight independent
+execution contexts and CUDA streams. Output buffers and temporal state remain
+separate per object. This preserves the existing parallel batch-1 execution
+while sharing immutable engine weights.
+
+The change is latency-neutral for one object: the same OpenGL TV5M workload
+measured 29.443 ms inference versus 29.462 ms before the change. TV11M
+hot-switch initialization fell from 3523.9 to 3246.9 ms (-7.9%). A four-point
+smoke completed 172 measured results with object IDs `[1,2,3,4]`, 84.054 ms
+mean inference, and no context-address or TensorRT enqueue errors. That smoke
+used the live unified UI and is a correctness/capacity result, not a
+same-scene latency comparison with the older direct-RealSense table.
+
+The optimization is retained for lower duplicate engine state and faster
+model switching, but it is not counted as steady-state tracking speedup.
+Ignored traces are under
+`results/benchmarks/shared_context_377dfb0/` on Thor.
+
 ## SAM 3.1 Object Multiplex applicability
 
 The official SAM 3.1 release and source were reviewed at upstream commit
