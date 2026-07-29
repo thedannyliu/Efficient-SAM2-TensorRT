@@ -597,7 +597,7 @@ encoder/tracker overlap in the unified launcher.
 
 The one-object completed rate improves 11.5%, but the intentionally delayed
 output adds 23.2 ms source age. At four objects, encoder and tracking kernels
-contend and throughput falls 2.5%. The low-latency default remains
+contend and throughput falls 2.5%. The standalone low-latency default remains
 `pipeline_overlap:=false`.
 
 SAM3 commit `fab0c9e` exposes the existing per-object context limit. In the
@@ -617,6 +617,31 @@ track engines and favored eight; it should not be substituted for this
 current shared-engine/unified-pipeline A/B. Ignored Thor traces are under
 `results/benchmarks/camera60_{sync,overlap}_65dc282/` and
 `results/benchmarks/camera60_concurrency_fab0c9e/`.
+
+## Object-count route transition
+
+Commit `f19ab9e` adds `pipeline_overlap_max_objects`. When the overlap master
+switch is enabled, the node uses cross-frame overlap only while the active
+object count is at or below this threshold. The unified SAM3-to-SAM2 launch
+uses a threshold of one:
+
+- one object: overlap for the measured 11.5% isolated throughput gain;
+- two or more: synchronous tracking to avoid the large source-age penalty and
+  four-object slowdown.
+
+Changing routes clears only an encoded frame that belongs to the old schedule.
+It does not reset prompts, object memories, or IDs. Live Thor validation added
+object `1`, then a second point. The result stream changed from
+`pipeline_overlap:true, objects:[1]` to
+`pipeline_overlap:false, objects:[1,2]`; both tracks continued without a
+restart. The selected route, configured master switch, threshold, and temporal
+delay are recorded in every `/sam/result_json` row.
+
+The current 848x480@60 displayed pipeline also routes presentation cadence
+separately so desktop painting does not starve TensorRT. With TV5M and four
+tracking contexts, the measured one/two/four-object model rates were
+32.43/19.13/11.26 FPS. This display scheduling does not change TensorRT
+precision, model operations, masks, or per-object state.
 
 ## SAM 3.1 Object Multiplex applicability
 
