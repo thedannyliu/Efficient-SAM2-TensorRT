@@ -238,7 +238,7 @@ class Sam2TrtNode final : public rclcpp::Node {
         message->header.frame_id = "instinctsam_shared";
         message->height = header.height;
         message->width = header.width;
-        message->encoding = sensor_msgs::image_encodings::BGR8;
+        message->encoding = sensor_msgs::image_encodings::RGB8;
         message->is_bigendian = false;
         message->step = header.stride;
         message->data.resize(header.payload_bytes);
