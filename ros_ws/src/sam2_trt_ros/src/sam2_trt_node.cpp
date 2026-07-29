@@ -50,6 +50,9 @@ class Sam2TrtNode final : public rclcpp::Node {
         static_cast<std::int64_t>(1.0e6 / shared_memory_poll_hz));
     max_objects_ = declare_parameter("max_objects", 8);
     track_concurrency_ = declare_parameter("track_concurrency", max_objects_);
+    track_bucket_size_ = declare_parameter("track_bucket_size", 1);
+    track_bucket_min_objects_ =
+        declare_parameter("track_bucket_min_objects", 4);
     pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
     pipeline_overlap_max_objects_ =
         declare_parameter("pipeline_overlap_max_objects", 1);
@@ -65,7 +68,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     if (bundle.empty()) throw std::invalid_argument("bundle_dir parameter is required");
     bundle_dir_ = bundle;
     tracker_ = std::make_unique<sam2_trt::Tracker>(
-        bundle_dir_, precision_, max_objects_, track_concurrency_);
+        bundle_dir_, precision_, max_objects_, track_concurrency_,
+        track_bucket_size_, track_bucket_min_objects_);
     if (!trace_path.empty()) {
       const std::filesystem::path path(trace_path);
       if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
@@ -297,7 +301,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     try {
       auto replacement = std::make_unique<sam2_trt::Tracker>(
           request.bundle_dir, request.precision, max_objects_,
-          track_concurrency_);
+          track_concurrency_, track_bucket_size_,
+          track_bucket_min_objects_);
       {
         std::lock_guard lock(tracker_mutex_);
         tracker_.swap(replacement);
@@ -588,6 +593,14 @@ class Sam2TrtNode final : public rclcpp::Node {
          << pipeline_overlap_max_objects_
          << ",\"pipeline_delay_frames\":"
          << (active_overlap ? 1 : 0)
+         << ",\"track_bucket_active\":"
+         << (track_bucket_size_ > 1 &&
+                     object_count_ >= track_bucket_min_objects_
+                 ? "true"
+                 : "false")
+         << ",\"track_bucket_size\":" << track_bucket_size_
+         << ",\"track_bucket_min_objects\":"
+         << track_bucket_min_objects_
          << ",\"color_convert_ms\":" << milliseconds(color_end - color_start)
          << ",\"inference_ms\":" << milliseconds(inference_end - inference_start)
          << ",\"host_input_copy_ms\":" << tracker_timings.host_input_copy_ms
@@ -659,6 +672,8 @@ class Sam2TrtNode final : public rclcpp::Node {
   int preview_height_{};
   int max_objects_{};
   int track_concurrency_{};
+  int track_bucket_size_{};
+  int track_bucket_min_objects_{};
   bool pipeline_overlap_{};
   int pipeline_overlap_max_objects_{};
   bool pipeline_overlap_active_{};

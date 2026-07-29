@@ -84,6 +84,22 @@ __global__ void memory_kernel(
 }
 
 template <class T>
+__global__ void pack_memory_bank_kernel(
+    const T* source, T* destination, int memory_index, int batch_index,
+    int batch, int tokens, int channels) {
+  const int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index >= tokens * channels) return;
+  const int token = index / channels;
+  const int channel = index % channels;
+  const std::size_t target =
+      (((static_cast<std::size_t>(memory_index) * tokens + token) * batch +
+        batch_index) *
+       channels +
+       channel);
+  destination[target] = source[index];
+}
+
+template <class T>
 __global__ void conversion_kernel(const float* input, T* output, std::size_t count) {
   const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < count) output[index] = convert<T>(input[index]);
@@ -119,6 +135,29 @@ void launch_nchw_to_memory_bank(const void* source, void* destination, nvinfer1:
   else if (dtype == nvinfer1::DataType::kHALF) memory_kernel<<<blocks, 256, 0, stream>>>(static_cast<const __half*>(source), static_cast<__half*>(destination), memory_index, batch_index, memory_count, batch, channels, height, width);
   else if (dtype == nvinfer1::DataType::kBF16) memory_kernel<<<blocks, 256, 0, stream>>>(static_cast<const __nv_bfloat16*>(source), static_cast<__nv_bfloat16*>(destination), memory_index, batch_index, memory_count, batch, channels, height, width);
   else throw std::invalid_argument("unsupported memory dtype");
+}
+
+void launch_pack_memory_bank(
+    const void* source, void* destination, nvinfer1::DataType dtype,
+    int memory_index, int batch_index, int batch, int tokens, int channels,
+    cudaStream_t stream) {
+  const int count = tokens * channels;
+  const int blocks = (count + 255) / 256;
+  if (dtype == nvinfer1::DataType::kFLOAT)
+    pack_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
+        static_cast<const float*>(source), static_cast<float*>(destination),
+        memory_index, batch_index, batch, tokens, channels);
+  else if (dtype == nvinfer1::DataType::kHALF)
+    pack_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
+        static_cast<const __half*>(source), static_cast<__half*>(destination),
+        memory_index, batch_index, batch, tokens, channels);
+  else if (dtype == nvinfer1::DataType::kBF16)
+    pack_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
+        static_cast<const __nv_bfloat16*>(source),
+        static_cast<__nv_bfloat16*>(destination), memory_index, batch_index,
+        batch, tokens, channels);
+  else
+    throw std::invalid_argument("unsupported memory dtype");
 }
 
 void launch_float_conversion(const float* input, void* output, nvinfer1::DataType dtype, std::size_t count, cudaStream_t stream) {

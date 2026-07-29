@@ -17,6 +17,10 @@ void launch_nchw_to_memory_bank(
     const void* source, void* destination, nvinfer1::DataType dtype,
     int memory_index, int batch_index, int memory_count, int batch, int channels,
     int height, int width, cudaStream_t stream);
+void launch_pack_memory_bank(
+    const void* source, void* destination, nvinfer1::DataType dtype,
+    int memory_index, int batch_index, int batch, int tokens, int channels,
+    cudaStream_t stream);
 void launch_float_conversion(
     const float* input, void* output, nvinfer1::DataType dtype,
     std::size_t count, cudaStream_t stream);

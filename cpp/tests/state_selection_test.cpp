@@ -16,6 +16,14 @@ int main() {
   assert(selected.pointers.front().frame == 0);
   assert(selected.pointers.back().frame == 5);
   assert(sam2_trt::padded_object_batch(3) == 4);
+  assert((sam2_trt::track_bucket_group_sizes(4, 4, 4, 4) ==
+          std::vector<int>{4}));
+  assert((sam2_trt::track_bucket_group_sizes(8, 8, 4, 4) ==
+          std::vector<int>{4, 4}));
+  assert((sam2_trt::track_bucket_group_sizes(3, 3, 2, 2) ==
+          std::vector<int>{2, 1}));
+  assert((sam2_trt::track_bucket_group_sizes(2, 2, 4, 4) ==
+          std::vector<int>{1, 1}));
 
   std::map<int, int> many_conditioning{{0, 0}, {4, 4}, {8, 8}, {12, 12}};
   const auto [closest, remaining] =

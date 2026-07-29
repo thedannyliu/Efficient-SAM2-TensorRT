@@ -136,6 +136,8 @@ struct Tracker::Impl {
   cudaEvent_t gpu_end{};
   int maximum_objects;
   int track_concurrency;
+  int track_bucket_size;
+  int track_bucket_min_objects;
   int next_id{1};
   int frame_index{0};
   std::vector<ObjectState> objects;
@@ -149,19 +151,26 @@ struct Tracker::Impl {
 
   Impl(
       const std::string& root, const std::string& precision, int maximum,
-      int concurrency)
+      int concurrency, int bucket_size, int bucket_minimum)
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
         track(
             (std::filesystem::path(root) /
              ("track_step." + precision + ".engine")).string(),
-            true, maximum),
+            bucket_size == 1, maximum),
         maximum_objects(maximum),
-        track_concurrency(concurrency) {
+        track_concurrency(concurrency),
+        track_bucket_size(bucket_size),
+        track_bucket_min_objects(bucket_minimum) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
     if (concurrency < 1 || concurrency > maximum)
       throw std::invalid_argument("track_concurrency must be in [1, max_objects]");
+    if (bucket_size != 1 && bucket_size != 2 && bucket_size != 4)
+      throw std::invalid_argument("track_bucket_size must be 1, 2, or 4");
+    if (bucket_minimum < 1)
+      throw std::invalid_argument(
+          "track_bucket_min_objects must be positive");
     check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     for (auto& event : encoded_ready)
       check_cuda(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
@@ -173,15 +182,15 @@ struct Tracker::Impl {
       auto& scratch = track_scratch[static_cast<std::size_t>(index)];
       const auto object_stream = track_streams[static_cast<std::size_t>(index)];
       scratch.memory = allocate_tensor(
-          {7, 4096, 1, 64}, dtype, object_stream);
+          {7, 4096, bucket_size, 64}, dtype, object_stream);
       scratch.memory_position = allocate_tensor(
-          {7, 4096, 1, 64}, dtype, object_stream);
+          {7, 4096, bucket_size, 64}, dtype, object_stream);
       scratch.object_pointers = allocate_tensor(
-          {16, 1, 256}, dtype, object_stream);
+          {16, bucket_size, 256}, dtype, object_stream);
       scratch.temporal = allocate_tensor(
-          {7, 1}, nvinfer1::DataType::kINT64, object_stream);
+          {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
       scratch.distance = allocate_tensor(
-          {16, 1}, nvinfer1::DataType::kINT64, object_stream);
+          {16, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
     }
     check_cuda(cudaEventCreate(&gpu_start));
     check_cuda(cudaEventCreate(&encoder_end));
@@ -379,10 +388,9 @@ struct Tracker::Impl {
     const auto slot = static_cast<std::size_t>(group.front()->id - 1);
     auto execution_stream = track_streams.at(slot);
     const int batch = padded_object_batch(static_cast<int>(group.size()));
-    if (batch != 1)
-      throw std::invalid_argument("parallel track slots require batch 1");
     const int memories = static_cast<int>(selections.front().memories.size());
     const int pointers = static_cast<int>(selections.front().pointers.size());
+    check_cuda(cudaStreamWaitEvent(execution_stream, ready_event, 0));
     auto inputs = common_features(encoded, batch, execution_stream);
     inputs["image_position"] = repeat_batch(
         encoded.at("image_position"), batch, execution_stream);
@@ -404,15 +412,12 @@ struct Tracker::Impl {
         if (item.value->memory.dtype != dtype || item.value->memory_position.dtype != dtype)
           throw std::invalid_argument("memory dtype does not match track engine");
         temporal[index * batch + row] = item.position;
-        const auto memory_bytes = 4096 * 64 * element_size(dtype);
-        check_cuda(cudaMemcpyAsync(
-            static_cast<std::byte*>(memory.data) + index * memory_bytes,
-            item.value->memory.data, memory_bytes, cudaMemcpyDeviceToDevice,
-            execution_stream));
-        check_cuda(cudaMemcpyAsync(
-            static_cast<std::byte*>(memory_position.data) + index * memory_bytes,
-            item.value->memory_position.data, memory_bytes,
-            cudaMemcpyDeviceToDevice, execution_stream));
+        launch_pack_memory_bank(
+            item.value->memory.data, memory.data, dtype, index, row, batch,
+            4096, 64, execution_stream);
+        launch_pack_memory_bank(
+            item.value->memory_position.data, memory_position.data, dtype,
+            index, row, batch, 4096, 64, execution_stream);
       }
       for (int index = 0; index < pointers; ++index) {
         const auto& item = selected.pointers[index];
@@ -446,10 +451,10 @@ struct Tracker::Impl {
     inputs["mask_temporal_position"] = std::move(temporal_tensor);
     inputs["object_pointers"] = object_pointers;
     inputs["pointer_frame_distance"] = std::move(distance_tensor);
-    check_cuda(cudaStreamWaitEvent(execution_stream, ready_event, 0));
     auto& output = track_outputs.at(slot);
     track.run_into(
-        inputs, 0, execution_stream, output, static_cast<int>(slot));
+        inputs, profile_for_batch(batch), execution_stream, output,
+        static_cast<int>(slot));
     for (std::size_t index = 0; index < group.size(); ++index)
       save_outputs(
           *group[index], output, index, false, execution_stream);
@@ -493,16 +498,26 @@ struct Tracker::Impl {
       track_futures.clear();
     };
     for (auto& [key, entries] : buckets) {
-      for (auto& entry : entries) {
-        auto* object = entry.first;
-        auto selection = std::move(entry.second);
+      std::size_t start = 0;
+      for (const int group_size : track_bucket_group_sizes(
+               static_cast<int>(entries.size()),
+               static_cast<int>(objects.size()), track_bucket_size,
+               track_bucket_min_objects)) {
+        std::vector<ObjectState*> group;
+        std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
+        group.reserve(static_cast<std::size_t>(group_size));
+        selections.reserve(static_cast<std::size_t>(group_size));
+        for (int offset = 0; offset < group_size; ++offset) {
+          auto& entry = entries[start + static_cast<std::size_t>(offset)];
+          group.push_back(entry.first);
+          selections.push_back(std::move(entry.second));
+        }
+        start += static_cast<std::size_t>(group_size);
         track_futures.push_back(std::async(
             std::launch::async,
-            [this, &encoded, object, selection = std::move(selection),
-             width, height, ready_event]() mutable {
-              std::vector<ObjectState*> group{object};
-              std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
-              selections.push_back(std::move(selection));
+            [this, &encoded, group = std::move(group),
+             selections = std::move(selections), width, height,
+             ready_event]() mutable {
               return run_track_group(
                   encoded, std::move(group), selections, width, height,
                   ready_event);
@@ -581,9 +596,11 @@ struct Tracker::Impl {
 
 Tracker::Tracker(
     const std::string& bundle, const std::string& precision, int maximum,
-    int track_concurrency)
+    int track_concurrency, int track_bucket_size,
+    int track_bucket_min_objects)
     : impl_(std::make_unique<Impl>(
-          bundle, precision, maximum, track_concurrency)) {}
+          bundle, precision, maximum, track_concurrency, track_bucket_size,
+          track_bucket_min_objects)) {}
 Tracker::~Tracker() = default;
 
 int Tracker::add_object(const Prompt& prompt) {

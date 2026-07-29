@@ -93,4 +93,21 @@ inline int padded_object_batch(int count) {
   throw std::invalid_argument("object count must be in [1, 8]");
 }
 
+inline std::vector<int> track_bucket_group_sizes(
+    int compatible_count, int object_count, int bucket_size,
+    int minimum_objects) {
+  if (compatible_count < 0 || object_count < compatible_count)
+    throw std::invalid_argument("invalid compatible object count");
+  if (bucket_size != 1 && bucket_size != 2 && bucket_size != 4)
+    throw std::invalid_argument("track bucket size must be 1, 2, or 4");
+  if (minimum_objects < 1)
+    throw std::invalid_argument("minimum bucket objects must be positive");
+  const int capacity =
+      bucket_size > 1 && object_count >= minimum_objects ? bucket_size : 1;
+  std::vector<int> result;
+  for (int remaining = compatible_count; remaining > 0; remaining -= capacity)
+    result.push_back(std::min(remaining, capacity));
+  return result;
+}
+
 }  // namespace sam2_trt
