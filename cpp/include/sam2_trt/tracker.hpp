@@ -51,6 +51,7 @@ class Tracker {
   std::optional<std::vector<ObjectMask>> process_pipelined_rgb8(
       const std::uint8_t* image, int width, int height,
       std::size_t row_stride);
+  void discard_pipelined_frame();
   TrackerTimings last_timings() const;
 
  private:

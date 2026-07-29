@@ -51,6 +51,12 @@ class Sam2TrtNode final : public rclcpp::Node {
     max_objects_ = declare_parameter("max_objects", 8);
     track_concurrency_ = declare_parameter("track_concurrency", max_objects_);
     pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
+    pipeline_overlap_max_objects_ =
+        declare_parameter("pipeline_overlap_max_objects", 1);
+    if (pipeline_overlap_max_objects_ < 1 ||
+        pipeline_overlap_max_objects_ > max_objects_)
+      throw std::invalid_argument(
+          "pipeline_overlap_max_objects must be in [1, max_objects]");
     const auto trace_path = declare_parameter("trace_path", "");
     const auto preview_width = declare_parameter("preview_width", 640);
     const auto preview_height = declare_parameter("preview_height", 360);
@@ -79,6 +85,8 @@ class Sam2TrtNode final : public rclcpp::Node {
         "/sam/object_masks", image_qos);
     preview_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         "/sam/preview", image_qos);
+    preview_label_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+        "/sam/preview_labels", image_qos);
     result_publisher_ = create_publisher<std_msgs::msg::String>("/sam/result_json", 10);
     subscription_ = create_subscription<sensor_msgs::msg::Image>(
         image_topic, rclcpp::SensorDataQoS().keep_last(1),
@@ -97,6 +105,7 @@ class Sam2TrtNode final : public rclcpp::Node {
             prompt.x1 = request->x1; prompt.y1 = request->y1;
             std::lock_guard lock(tracker_mutex_);
             response->object_id = tracker_->add_object(prompt);
+            ++object_count_;
             response->success = true;
           } catch (const std::exception& error) {
             response->success = false;
@@ -109,6 +118,8 @@ class Sam2TrtNode final : public rclcpp::Node {
           std::lock_guard lock(tracker_mutex_);
           tracker_->reset();
           pipeline_pending_.reset();
+          pipeline_overlap_active_ = false;
+          object_count_ = 0;
           response->success = true;
         });
     switch_model_service_ = create_service<sam2_trt_msgs::srv::SwitchModel>(
@@ -294,6 +305,8 @@ class Sam2TrtNode final : public rclcpp::Node {
         bundle_dir_ = request.bundle_dir;
         precision_ = request.precision;
         pipeline_pending_.reset();
+        pipeline_overlap_active_ = false;
+        object_count_ = 0;
         replacement.reset();
       }
       response.success = true;
@@ -368,6 +381,40 @@ class Sam2TrtNode final : public rclcpp::Node {
     return preview;
   }
 
+  sensor_msgs::msg::Image make_preview_labels(
+      const sensor_msgs::msg::Image& frame,
+      const std::vector<sam2_trt::ObjectMask>& masks) const {
+    sensor_msgs::msg::Image labels;
+    labels.header = frame.header;
+    labels.height = static_cast<std::uint32_t>(preview_height_);
+    labels.width = static_cast<std::uint32_t>(preview_width_);
+    labels.encoding = sensor_msgs::image_encodings::MONO8;
+    labels.is_bigendian = false;
+    labels.step = static_cast<std::uint32_t>(preview_width_);
+    labels.data.assign(
+        static_cast<std::size_t>(labels.step) * labels.height, 0);
+    for (int y = 0; y < preview_height_; ++y) {
+      const int source_y = std::min(
+          static_cast<int>(frame.height) - 1,
+          y * static_cast<int>(frame.height) / preview_height_);
+      for (int x = 0; x < preview_width_; ++x) {
+        const int source_x = std::min(
+            static_cast<int>(frame.width) - 1,
+            x * static_cast<int>(frame.width) / preview_width_);
+        for (const auto& mask : masks) {
+          const auto mask_x = std::min(mask.width - 1, source_x);
+          const auto mask_y = std::min(mask.height - 1, source_y);
+          if (mask.mono8[
+                  static_cast<std::size_t>(mask_y) * mask.width + mask_x] != 0)
+            labels.data[
+                static_cast<std::size_t>(y) * preview_width_ + x] =
+                static_cast<std::uint8_t>(mask.object_id);
+        }
+      }
+    }
+    return labels;
+  }
+
   void preview_worker(std::stop_token token) {
     while (!token.stop_requested()) {
       std::optional<PreviewJob> job;
@@ -381,9 +428,15 @@ class Sam2TrtNode final : public rclcpp::Node {
         latest_preview_.reset();
       }
       const auto start = SteadyClock::now();
-      auto preview = make_preview(*job->frame, job->masks);
+      if (preview_publisher_->get_subscription_count() > 0) {
+        auto preview = make_preview(*job->frame, job->masks);
+        preview_publisher_->publish(std::move(preview));
+      }
+      if (preview_label_publisher_->get_subscription_count() > 0) {
+        auto labels = make_preview_labels(*job->frame, job->masks);
+        preview_label_publisher_->publish(std::move(labels));
+      }
       last_preview_compose_ms_ = milliseconds(SteadyClock::now() - start);
-      preview_publisher_->publish(std::move(preview));
     }
   }
 
@@ -448,9 +501,19 @@ class Sam2TrtNode final : public rclcpp::Node {
     PendingFrame output_pending;
     sam2_trt::TrackerTimings tracker_timings;
     std::string active_model_id;
+    bool active_overlap = false;
     {
       std::lock_guard lock(tracker_mutex_);
-      if (pipeline_overlap_) {
+      const bool routed_overlap =
+          pipeline_overlap_ && object_count_ > 0 &&
+          object_count_ <= pipeline_overlap_max_objects_;
+      if (routed_overlap != pipeline_overlap_active_) {
+        tracker_->discard_pipelined_frame();
+        pipeline_pending_.reset();
+        pipeline_overlap_active_ = routed_overlap;
+      }
+      active_overlap = pipeline_overlap_active_;
+      if (active_overlap) {
         auto result = tracker_->process_pipelined_rgb8(
             rgb, input_frame->width, input_frame->height, stride);
         if (!result) {
@@ -518,8 +581,13 @@ class Sam2TrtNode final : public rclcpp::Node {
          << '"'
          << ",\"input_transport_ms\":" << output_pending.input_transport_ms
          << ",\"pipeline_overlap\":"
+         << (active_overlap ? "true" : "false")
+         << ",\"pipeline_overlap_configured\":"
          << (pipeline_overlap_ ? "true" : "false")
-         << ",\"pipeline_delay_frames\":" << (pipeline_overlap_ ? 1 : 0)
+         << ",\"pipeline_overlap_max_objects\":"
+         << pipeline_overlap_max_objects_
+         << ",\"pipeline_delay_frames\":"
+         << (active_overlap ? 1 : 0)
          << ",\"color_convert_ms\":" << milliseconds(color_end - color_start)
          << ",\"inference_ms\":" << milliseconds(inference_end - inference_start)
          << ",\"host_input_copy_ms\":" << tracker_timings.host_input_copy_ms
@@ -556,7 +624,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     result.data = json.str();
     result_publisher_->publish(result);
     if (trace_) trace_ << result.data << '\n';
-    if (preview_publisher_->get_subscription_count() > 0)
+    if (preview_publisher_->get_subscription_count() > 0 ||
+        preview_label_publisher_->get_subscription_count() > 0)
       enqueue_preview(frame, std::move(masks));
   }
 
@@ -565,6 +634,8 @@ class Sam2TrtNode final : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mask_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr object_mask_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr
+      preview_label_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr result_publisher_;
   rclcpp::Service<sam2_trt_msgs::srv::AddObject>::SharedPtr add_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
@@ -589,6 +660,9 @@ class Sam2TrtNode final : public rclcpp::Node {
   int max_objects_{};
   int track_concurrency_{};
   bool pipeline_overlap_{};
+  int pipeline_overlap_max_objects_{};
+  bool pipeline_overlap_active_{};
+  int object_count_{};
   std::string model_id_;
   std::string bundle_dir_;
   std::string precision_;

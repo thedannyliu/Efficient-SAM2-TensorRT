@@ -15,6 +15,9 @@ def generate_launch_description():
             DeclareLaunchArgument("max_objects", default_value="8"),
             DeclareLaunchArgument("track_concurrency", default_value="8"),
             DeclareLaunchArgument("pipeline_overlap", default_value="false"),
+            DeclareLaunchArgument(
+                "pipeline_overlap_max_objects", default_value="1"
+            ),
             DeclareLaunchArgument("trace_path", default_value=""),
             DeclareLaunchArgument("preview_width", default_value="640"),
             DeclareLaunchArgument("preview_height", default_value="360"),
@@ -46,6 +49,12 @@ def generate_launch_description():
                                 "pipeline_overlap": ParameterValue(
                                     LaunchConfiguration("pipeline_overlap"),
                                     value_type=bool,
+                                ),
+                                "pipeline_overlap_max_objects": ParameterValue(
+                                    LaunchConfiguration(
+                                        "pipeline_overlap_max_objects"
+                                    ),
+                                    value_type=int,
                                 ),
                                 "trace_path": LaunchConfiguration("trace_path"),
                                 "preview_width": ParameterValue(

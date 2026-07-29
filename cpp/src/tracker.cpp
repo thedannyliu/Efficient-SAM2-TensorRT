@@ -619,6 +619,11 @@ std::optional<std::vector<ObjectMask>> Tracker::process_pipelined_rgb8(
   return impl_->process_pipelined(image, width, height, stride);
 }
 
+void Tracker::discard_pipelined_frame() {
+  std::lock_guard lock(impl_->mutex);
+  impl_->pipelined_frame.reset();
+}
+
 TrackerTimings Tracker::last_timings() const {
   std::lock_guard lock(impl_->mutex);
   return impl_->timings;
