@@ -583,6 +583,41 @@ while inference varied in the opposite direction. The higher poll rate is
 rejected as noise. SAM3 commit `a60e1cf` keeps the launch argument but restores
 240 Hz as the default.
 
+## Unified background concurrency update
+
+The current shared-memory/OpenGL pipeline was remeasured at 848x480@60 after
+the shared track-engine change. SAM3 commit `65dc282` exposes cross-frame
+encoder/tracker overlap in the unified launcher.
+
+| Objects | Sync inference / FPS / source age | Overlap inference / FPS / source age | Decision |
+| ---: | --- | --- | --- |
+| 1 | 29.219 ms / 33.766 / 42.072 ms | 26.225 ms / 37.641 / 65.250 ms | optional throughput mode |
+| 2 | 46.667 ms / 21.356 / 61.250 ms | 45.429 ms / 21.923 / 105.665 ms | reject for interactive use |
+| 4 | 83.527 ms / 11.952 / 98.314 ms | 85.667 ms / 11.657 / 185.864 ms | reject |
+
+The one-object completed rate improves 11.5%, but the intentionally delayed
+output adds 23.2 ms source age. At four objects, encoder and tracking kernels
+contend and throughput falls 2.5%. The low-latency default remains
+`pipeline_overlap:=false`.
+
+SAM3 commit `fab0c9e` exposes the existing per-object context limit. In the
+same unified pipeline, four-object concurrency 1/2/4/8 measured
+10.287/11.493/11.952/11.952 FPS. For eight objects, three 150-output
+repetitions averaged:
+
+| `track_concurrency` | Inference | Completed FPS | Source age |
+| ---: | ---: | ---: | ---: |
+| 4 | 162.78 ms | 6.136 | 176.86 ms |
+| 8 | 166.75 ms | 5.993 | 181.58 ms |
+
+Four streams preserve all model operations and results while avoiding
+excessive GPU contention. The unified SAM3-to-SAM2 launcher now defaults to
+four. The older direct-RealSense result above used separately deserialized
+track engines and favored eight; it should not be substituted for this
+current shared-engine/unified-pipeline A/B. Ignored Thor traces are under
+`results/benchmarks/camera60_{sync,overlap}_65dc282/` and
+`results/benchmarks/camera60_concurrency_fab0c9e/`.
+
 ## SAM 3.1 Object Multiplex applicability
 
 The official SAM 3.1 release and source were reviewed at upstream commit
