@@ -512,6 +512,29 @@ results/thor/tv5_60fps_reuse_v1/
 results/thor/tv5_60fps_pipeline_v1/
 ```
 
+## Unified UI OpenGL scaling
+
+The unified General Instinct-to-SAM2 UI publishes a 640x360 asynchronous
+preview but initially opens a resizable 2560x1440 window. Thor's OpenCV build
+has Qt5 OpenGL support. Enabling its OpenGL HighGUI path at SAM3 repository
+commit `1cc8594` reduced viewer CPU from about 78% to 3--4% without changing
+the camera pixels, TensorRT engines, mask computation, preview dimensions, or
+prompt.
+
+All rows below are one-object, 1280x720@30 displayed runs with 100 warm-up
+outputs and 500 measured outputs:
+
+| Model | General viewer inference/FPS/source age | OpenGL viewer inference/FPS/source age | Inference change | Source-age change |
+| --- | --- | --- | ---: | ---: |
+| TV5M | 34.112 ms / 27.218 / 48.303 ms | 29.462 ms / 29.296 / 39.184 ms | -13.6% | -18.9% |
+| TV11M | 35.737 ms / 27.046 / 54.154 ms | 30.744 ms / 29.910 / 41.870 ms | -14.0% | -22.7% |
+| TV21M | 39.050 ms / 24.908 / 58.135 ms | 34.723 ms / 27.877 / 52.477 ms | -11.1% | -9.7% |
+
+The OpenGL TV5M trace splits its 29.462 ms model path into 7.278 ms encoder
+GPU time and 22.051 ms tracking-tail GPU time. Shared input transport is
+0.951 ms and host image staging is 0.182 ms. The common SAM2 tracking tail,
+not ROS transport, remains the largest exact-output optimization target.
+
 ## SAM 3.1 Object Multiplex applicability
 
 The official SAM 3.1 release and source were reviewed at upstream commit
