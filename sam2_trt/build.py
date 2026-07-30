@@ -63,6 +63,10 @@ def _profile_batches(role: str) -> tuple[int, ...]:
     return (1, 2, 4, 8)
 
 
+def _profile_opt_endpoint(role: str, track_opt_max_state: bool) -> str:
+    return "max" if role == "track_step" and track_opt_max_state else "opt"
+
+
 def _validate_builder_options(builder_optimization_level: int, max_aux_streams: int) -> None:
     if builder_optimization_level not in range(6):
         raise ValueError("builder optimization level must be between 0 and 5")
@@ -80,6 +84,7 @@ def build_engine(
     timing_cache: str | Path | None = None,
     builder_optimization_level: int = 5,
     max_aux_streams: int = 0,
+    track_opt_max_state: bool = False,
 ) -> tuple[dict[str, list[int]], dict[str, list[int]]]:
     _validate_builder_options(builder_optimization_level, max_aux_streams)
     import tensorrt as trt
@@ -114,11 +119,12 @@ def build_engine(
         if not dynamic_inputs:
             break
         profile = builder.create_optimization_profile()
+        opt_endpoint = _profile_opt_endpoint(role, track_opt_max_state)
         for tensor in dynamic_inputs:
             profile.set_shape(
                 tensor.name,
                 _shape_for(role, tensor.name, batch, "min"),
-                _shape_for(role, tensor.name, batch, "opt"),
+                _shape_for(role, tensor.name, batch, opt_endpoint),
                 _shape_for(role, tensor.name, batch, "max"),
             )
         config.add_optimization_profile(profile)
@@ -151,6 +157,7 @@ def build_bundle(
     allow_non_thor: bool = False,
     builder_optimization_level: int = 5,
     max_aux_streams: int = 0,
+    track_opt_max_state: bool = False,
     reuse_downstream_engines: str | Path | None = None,
     build_roles: tuple[str, ...] | None = None,
 ) -> Path:
@@ -236,6 +243,7 @@ def build_bundle(
             timing_cache=root / "timing.cache",
             builder_optimization_level=builder_optimization_level,
             max_aux_streams=max_aux_streams,
+            track_opt_max_state=track_opt_max_state,
         )
         records.append(
             EngineRecord(
@@ -252,6 +260,7 @@ def build_bundle(
     manifest.environment["tensorrt_device_model"] = device_model()
     manifest.environment["builder_optimization_level"] = builder_optimization_level
     manifest.environment["max_aux_streams"] = max_aux_streams
+    manifest.environment["track_opt_max_state"] = track_opt_max_state
     manifest.environment["reused_downstream_engine_dir"] = (
         os.fspath(reused_root) if reused_root else None
     )
@@ -269,6 +278,7 @@ def build_bundle(
                 "precision": precision,
                 "builder_optimization_level": builder_optimization_level,
                 "max_aux_streams": max_aux_streams,
+                "track_opt_max_state": track_opt_max_state,
                 "engines": [record.filename for record in records],
                 "built_engines": built_engines,
                 "reused_engines": reused_engines,

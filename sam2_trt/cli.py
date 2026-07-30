@@ -60,6 +60,7 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--workspace-gib", type=float, default=8.0)
     build.add_argument("--builder-optimization-level", type=int, choices=range(6), default=5)
     build.add_argument("--max-aux-streams", type=int, default=0)
+    build.add_argument("--track-opt-max-state", action="store_true")
     build.add_argument("--reuse-downstream-engines")
     build.add_argument(
         "--build-role",
@@ -172,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_non_thor=args.allow_non_thor,
             builder_optimization_level=args.builder_optimization_level,
             max_aux_streams=args.max_aux_streams,
+            track_opt_max_state=args.track_opt_max_state,
             reuse_downstream_engines=args.reuse_downstream_engines,
             build_roles=tuple(args.build_role) if args.build_role else None,
         )
