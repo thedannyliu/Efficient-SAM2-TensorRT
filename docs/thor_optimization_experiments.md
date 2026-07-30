@@ -690,6 +690,56 @@ changing ONNX, weights, or precision. It remains a candidate until
 same-input mask agreement is recorded. Bucket size 1 remains the deployed
 default.
 
+## 2026-07-29 TinyViT best-checkpoint refresh
+
+The Thor bundles were rebuilt from the NAS `tinyvit_best` checkpoints. Their
+SHA256 values are:
+
+| Encoder | Checkpoint SHA256 |
+| --- | --- |
+| TV5M | `0bb1444bfdb39f2a116b68f012b07b304ca0a6d024b73dbf410fc0b7efce5e68` |
+| TV11M | `a00198002507272ddae4e4c9657f80000dd453369a46c1fa95a05aa8f83f4c5a` |
+| TV21M | `485cc8a1381e799559ddfb7e99014f336af03483c096dd4332fcb2302676acc5` |
+
+All three checkpoints load 309 task-tuned downstream tensors, so their
+prompt/track ONNX graphs and engines are independent. The bundles use FP16,
+builder optimization level 5, zero auxiliary streams, and full-state track
+profiles. All bundle hashes verified on Thor.
+
+Warmup 20 / measured 100 engine results:
+
+| Model | Encoder | Point | Box | Track b1 | Track b2 | Track b4 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TV5M | 7.067 ms | 2.402 ms | 2.540 ms | 15.095 ms | 58.568 ms | 121.740 ms |
+| TV11M | 7.224 ms | 2.390 ms | 2.539 ms | 15.206 ms | 58.356 ms | 120.883 ms |
+| TV21M | 13.048 ms | 2.394 ms | 2.527 ms | 15.138 ms | 58.250 ms | 121.310 ms |
+
+TV11M's encoder is only 2.2% slower than TV5M in this measurement. TV21M's
+encoder is 84.6% slower; the downstream graphs remain effectively unchanged.
+Batch 2/4 object throughput is lower for every variant, so the deployed
+object bucket remains size 1.
+
+Prompt parity used `videos/test1.mov` and `videos/test2.mov`, frames
+0/15/30/45, point `(0.40, 0.55)`, box `(0.20, 0.20, 0.58, 0.88)`, and the
+matching PyTorch checkpoint:
+
+| Model | Prompt | Mean mask IoU | Minimum mask IoU | Samples >=0.95 |
+| --- | --- | ---: | ---: | ---: |
+| TV5M | Point | 0.99595 | 0.98747 | 8/8 |
+| TV5M | Box | 0.99192 | 0.95617 | 8/8 |
+| TV11M | Point | 0.99488 | 0.97943 | 8/8 |
+| TV11M | Box | 0.99754 | 0.99120 | 8/8 |
+| TV21M | Point | 0.97120 | 0.79071 | 7/8 |
+| TV21M | Box | 0.99799 | 0.99159 | 8/8 |
+
+TV21M's point outlier is a multimask-selection flip on
+`test1_frame_000030`: PyTorch scores masks 1/2 at 0.7077/0.6834, while
+TensorRT scores them at 0.6997/0.7158. Exporting only point-prompt LayerNorm
+in FP32 did not change the selected mask or minimum IoU. The all-FP16 TV21M
+bundle is accepted under the requested mean-retention target (mean IoU
+0.9712), with the per-sample exception documented; TV5M and TV11M pass the
+stricter 0.95 minimum-sample rule.
+
 ## SAM 3.1 Object Multiplex applicability
 
 The official SAM 3.1 release and source were reviewed at upstream commit
