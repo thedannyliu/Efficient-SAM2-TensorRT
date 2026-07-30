@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .benchmark import summarize_trace
-from .build import build_bundle
+from .build import build_bundle, build_engine, require_thor
 from .export import export_bundle
 from .manifest import BundleManifest
 from .lock import pin_environment
@@ -85,6 +85,43 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     build.add_argument("--allow-non-thor", action="store_true", help=argparse.SUPPRESS)
+
+    build_engine_parser = subparsers.add_parser(
+        "build-engine",
+        help="build an isolated TensorRT engine without modifying a bundle",
+    )
+    build_engine_parser.add_argument("--onnx", required=True)
+    build_engine_parser.add_argument("--engine", required=True)
+    build_engine_parser.add_argument(
+        "--role",
+        choices=(
+            "encoder",
+            "prompt_point_step",
+            "prompt_box_step",
+            "prompt_mask_step",
+            "track_step",
+        ),
+        required=True,
+    )
+    build_engine_parser.add_argument(
+        "--profile-batch",
+        action="append",
+        type=int,
+        choices=(1, 2, 4, 8),
+        required=True,
+    )
+    build_engine_parser.add_argument("--workspace-gib", type=float, default=8.0)
+    build_engine_parser.add_argument(
+        "--builder-optimization-level", type=int, choices=range(6), default=5
+    )
+    build_engine_parser.add_argument("--max-aux-streams", type=int, default=0)
+    build_engine_parser.add_argument("--track-opt-max-state", action="store_true")
+    build_engine_parser.add_argument(
+        "--timing-cache", help="optional candidate-specific timing cache"
+    )
+    build_engine_parser.add_argument(
+        "--allow-non-thor", action="store_true", help=argparse.SUPPRESS
+    )
 
     validate = subparsers.add_parser("validate", help="apply the no-accuracy-loss gate")
     validate.add_argument("--baseline", required=True)
@@ -199,6 +236,33 @@ def main(argv: list[str] | None = None) -> int:
             track_opt_max_state=args.track_opt_max_state,
             reuse_downstream_engines=args.reuse_downstream_engines,
             build_roles=tuple(args.build_role) if args.build_role else None,
+        )
+        return 0
+    if args.command == "build-engine":
+        require_thor(args.allow_non_thor)
+        inputs, outputs = build_engine(
+            args.onnx,
+            args.engine,
+            role=args.role,
+            workspace_gib=args.workspace_gib,
+            timing_cache=args.timing_cache,
+            builder_optimization_level=args.builder_optimization_level,
+            max_aux_streams=args.max_aux_streams,
+            track_opt_max_state=args.track_opt_max_state,
+            profile_batches=tuple(args.profile_batch),
+        )
+        print(
+            json.dumps(
+                {
+                    "engine": str(Path(args.engine).resolve()),
+                    "role": args.role,
+                    "profile_batches": args.profile_batch,
+                    "inputs": inputs,
+                    "outputs": outputs,
+                },
+                indent=2,
+                sort_keys=True,
+            )
         )
         return 0
     if args.command == "validate":

@@ -45,6 +45,9 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
             _shape_for("prompt_mask_step", "mask_input", 4, "opt"),
             (4, 1, 1024, 1024),
         )
+        self.assertEqual(_profile_batches("track_step", (2,)), (2,))
+        with self.assertRaisesRegex(ValueError, "does not support"):
+            _profile_batches("track_step", (8,))
 
     def test_track_profile_can_optimize_for_full_runtime_state(self):
         self.assertEqual(_profile_opt_endpoint("track_step", True), "max")

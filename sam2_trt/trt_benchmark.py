@@ -46,7 +46,11 @@ def benchmark_engine(
         raise RuntimeError(f"failed to deserialize {engine_path}")
     context = engine.create_execution_context()
     stream = torch.cuda.Stream()
-    profile = 0 if role == "encoder" else (1, 2, 4, 8).index(batch)
+    profile = (
+        0
+        if engine.num_optimization_profiles == 1 or role == "encoder"
+        else (1, 2, 4, 8).index(batch)
+    )
     if engine.num_optimization_profiles > 1:
         if not context.set_optimization_profile_async(profile, stream.cuda_stream):
             raise RuntimeError(f"failed to select optimization profile {profile}")

@@ -56,12 +56,25 @@ def _network_flags(trt):
     return flags
 
 
-def _profile_batches(role: str) -> tuple[int, ...]:
+def _profile_batches(
+    role: str, requested: tuple[int, ...] | None = None
+) -> tuple[int, ...]:
     if role == "encoder":
-        return (1,)
-    if role == "track_step":
-        return (1, 2, 4)
-    return (1, 2, 4, 8)
+        supported = (1,)
+    elif role == "track_step":
+        supported = (1, 2, 4)
+    else:
+        supported = (1, 2, 4, 8)
+    if requested is None:
+        return supported
+    if not requested or len(set(requested)) != len(requested):
+        raise ValueError("profile batches must be non-empty and unique")
+    unknown = set(requested).difference(supported)
+    if unknown:
+        raise ValueError(
+            f"{role} does not support profile batches {sorted(unknown)}"
+        )
+    return requested
 
 
 def _profile_opt_endpoint(role: str, track_opt_max_state: bool) -> str:
@@ -86,6 +99,7 @@ def build_engine(
     builder_optimization_level: int = 5,
     max_aux_streams: int = 0,
     track_opt_max_state: bool = False,
+    profile_batches: tuple[int, ...] | None = None,
 ) -> tuple[dict[str, list[int]], dict[str, list[int]]]:
     _validate_builder_options(builder_optimization_level, max_aux_streams)
     import tensorrt as trt
@@ -111,7 +125,7 @@ def build_engine(
         cache = config.create_timing_cache(payload)
         config.set_timing_cache(cache, ignore_mismatch=False)
 
-    for batch in _profile_batches(role):
+    for batch in _profile_batches(role, profile_batches):
         dynamic_inputs = [
             network.get_input(index)
             for index in range(network.num_inputs)
