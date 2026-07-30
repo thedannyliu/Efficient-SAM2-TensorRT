@@ -122,10 +122,12 @@ struct Tracker::Impl {
   Engine encoder;
   Engine point_prompt;
   Engine box_prompt;
+  std::unique_ptr<Engine> mask_prompt;
   Engine track;
   std::array<std::map<std::string, DeviceTensor>, 2> encoder_outputs;
   std::map<std::string, DeviceTensor> point_prompt_outputs;
   std::map<std::string, DeviceTensor> box_prompt_outputs;
+  std::map<std::string, DeviceTensor> mask_prompt_outputs;
   std::array<std::map<std::string, DeviceTensor>, 8> track_outputs;
   std::array<TrackScratch, 8> track_scratch;
   cudaStream_t stream{};
@@ -171,6 +173,10 @@ struct Tracker::Impl {
     if (bucket_minimum < 1)
       throw std::invalid_argument(
           "track_bucket_min_objects must be positive");
+    const auto mask_engine_path = std::filesystem::path(root) /
+        ("prompt_mask_step." + precision + ".engine");
+    if (std::filesystem::is_regular_file(mask_engine_path))
+      mask_prompt = std::make_unique<Engine>(mask_engine_path.string());
     check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     for (auto& event : encoded_ready)
       check_cuda(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
@@ -209,6 +215,7 @@ struct Tracker::Impl {
     for (auto& output : encoder_outputs) output.clear();
     point_prompt_outputs.clear();
     box_prompt_outputs.clear();
+    mask_prompt_outputs.clear();
     cudaStreamSynchronize(stream);
     for (int index = 0; index < maximum_objects; ++index) {
       const auto slot = static_cast<std::size_t>(index);
@@ -381,6 +388,48 @@ struct Tracker::Impl {
     return masks_from_output(group, output, width, height, stream);
   }
 
+  std::vector<ObjectMask> run_mask_prompt_group(
+      const std::map<std::string, DeviceTensor>& encoded,
+      std::vector<ObjectState*> group, int width, int height) {
+    if (!mask_prompt)
+      throw std::runtime_error(
+          "mask prompt engine is not available in this bundle");
+    const int batch = padded_object_batch(static_cast<int>(group.size()));
+    auto inputs = common_features(encoded, batch, stream);
+    const auto dtype = mask_prompt->tensor_dtype("mask_input");
+    auto mask_input = allocate_tensor(
+        {batch, 1, 1024, 1024}, dtype, stream);
+    const std::size_t output_stride =
+        1024U * 1024U * element_size(dtype);
+    for (int row = 0; row < batch; ++row) {
+      const auto& prompt =
+          group[std::min<int>(row, group.size() - 1)]->prompt;
+      auto source = allocate_tensor(
+          {prompt.mask_height, static_cast<int64_t>(prompt.mask_stride)},
+          nvinfer1::DataType::kUINT8, stream);
+      check_cuda(cudaMemcpy2DAsync(
+          source.data, prompt.mask_stride, prompt.mask.data(),
+          prompt.mask_stride, prompt.mask_width, prompt.mask_height,
+          cudaMemcpyHostToDevice, stream));
+      launch_preprocess_mono8_mask(
+          static_cast<const std::uint8_t*>(source.data),
+          prompt.mask_width, prompt.mask_height, prompt.mask_stride,
+          static_cast<std::byte*>(mask_input.data) +
+              static_cast<std::size_t>(row) * output_stride,
+          dtype, stream);
+    }
+    inputs["mask_input"] = std::move(mask_input);
+    mask_prompt->run_into(
+        inputs, profile_for_batch(batch), stream, mask_prompt_outputs);
+    for (std::size_t index = 0; index < group.size(); ++index) {
+      save_outputs(
+          *group[index], mask_prompt_outputs, index, true, stream);
+      group[index]->pending = false;
+    }
+    return masks_from_output(
+        group, mask_prompt_outputs, width, height, stream);
+  }
+
   std::vector<ObjectMask> run_track_group(
       const std::map<std::string, DeviceTensor>& encoded, std::vector<ObjectState*> group,
       const std::vector<SelectedState<std::shared_ptr<FrameState>>>& selections,
@@ -466,10 +515,22 @@ struct Tracker::Impl {
       const std::map<std::string, DeviceTensor>& encoded, int width,
       int height, cudaEvent_t ready_event) {
     std::vector<ObjectMask> masks;
+    std::vector<ObjectState*> mask_group;
+    for (auto& object : objects)
+      if (object.pending && object.prompt.kind == PromptKind::Mask)
+        mask_group.push_back(&object);
+    if (!mask_group.empty()) {
+      auto output = run_mask_prompt_group(
+          encoded, std::move(mask_group), width, height);
+      masks.insert(
+          masks.end(), std::make_move_iterator(output.begin()),
+          std::make_move_iterator(output.end()));
+    }
     for (int prompt_count : {1, 2}) {
       std::vector<ObjectState*> group;
       for (auto& object : objects)
-        if (object.pending && (object.prompt.kind == PromptKind::Point ? 1 : 2) == prompt_count)
+        if (object.pending && object.prompt.kind != PromptKind::Mask &&
+            (object.prompt.kind == PromptKind::Point ? 1 : 2) == prompt_count)
           group.push_back(&object);
       if (!group.empty()) {
         auto output = run_prompt_group(encoded, group, prompt_count, width, height);
@@ -607,6 +668,16 @@ int Tracker::add_object(const Prompt& prompt) {
   std::lock_guard lock(impl_->mutex);
   if (static_cast<int>(impl_->objects.size()) >= impl_->maximum_objects)
     throw std::runtime_error("maximum object count reached");
+  if (prompt.kind == PromptKind::Mask) {
+    if (!impl_->mask_prompt)
+      throw std::runtime_error(
+          "mask prompt engine is not available in this bundle");
+    if (prompt.mask_width < 1 || prompt.mask_height < 1 ||
+        prompt.mask_stride < static_cast<std::size_t>(prompt.mask_width) ||
+        prompt.mask.size() <
+            prompt.mask_stride * static_cast<std::size_t>(prompt.mask_height))
+      throw std::invalid_argument("invalid mono8 mask prompt");
+  }
   const int id = impl_->next_id++;
   impl_->objects.push_back({id, prompt});
   return id;

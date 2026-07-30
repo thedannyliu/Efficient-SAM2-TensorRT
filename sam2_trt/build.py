@@ -36,6 +36,7 @@ def _shape_for(role: str, name: str, batch: int, endpoint: str):
         "image_position": (batch, 256, 64, 64),
         "point_coords": (batch, prompts, 2),
         "point_labels": (batch, prompts),
+        "mask_input": (batch, 1, 1024, 1024),
         "mask_memory": (memory_frames, 4096, batch, 64),
         "mask_memory_position": (memory_frames, 4096, batch, 64),
         "mask_temporal_position": (memory_frames, batch),
@@ -172,7 +173,13 @@ def build_bundle(
         raise ValueError(
             f"graph dtype is {exported_dtype}, but precision {precision} requires {expected_dtype} export"
         )
-    all_roles = ("encoder", "prompt_point_step", "prompt_box_step", "track_step")
+    all_roles = (
+        "encoder",
+        "prompt_point_step",
+        "prompt_box_step",
+        "prompt_mask_step",
+        "track_step",
+    )
     selected_roles = set(build_roles or (("encoder",) if reuse_downstream_engines else all_roles))
     unknown_roles = selected_roles.difference(all_roles)
     if unknown_roles:

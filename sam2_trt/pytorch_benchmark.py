@@ -68,7 +68,9 @@ def benchmark_pytorch_graphs(
         official = model.forward_image(image)
         _, _, positions, sizes = model._prepare_backbone_features(official)
         base_position = positions[-1].permute(1, 2, 0).reshape(1, 256, *sizes[-1])
-        encoder, point, box, track = _modules(torch, model, model, base_position)
+        encoder, point, box, mask, track = _modules(
+            torch, model, model, base_position
+        )
         high0 = torch.zeros(batch, 32, 256, 256, device="cuda", dtype=dtype)
         high1 = torch.zeros(batch, 64, 128, 128, device="cuda", dtype=dtype)
         embedding = torch.zeros(batch, 256, 64, 64, device="cuda", dtype=dtype)
@@ -76,6 +78,9 @@ def benchmark_pytorch_graphs(
         point_labels = torch.ones(batch, 1, device="cuda", dtype=torch.int32)
         box_coords = torch.zeros(batch, 2, 2, device="cuda", dtype=dtype)
         box_labels = torch.tensor([[2, 3]], device="cuda", dtype=torch.int32).expand(batch, -1)
+        mask_input = torch.zeros(
+            batch, 1, 1024, 1024, device="cuda", dtype=dtype
+        )
         position = base_position.expand(batch, -1, -1, -1)
         memory = torch.zeros(4, 4096, batch, 64, device="cuda", dtype=dtype)
         memory_position = torch.zeros_like(memory)
@@ -88,6 +93,7 @@ def benchmark_pytorch_graphs(
         "encoder": (encoder, (image,)),
         "prompt_point_step": (point, (high0, high1, embedding, point_coords, point_labels)),
         "prompt_box_step": (box, (high0, high1, embedding, box_coords, box_labels)),
+        "prompt_mask_step": (mask, (high0, high1, embedding, mask_input)),
         "track_step": (
             track,
             (

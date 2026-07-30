@@ -46,12 +46,23 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument(
         "--reuse-downstream-role",
         action="append",
-        choices=("prompt_point_step", "prompt_box_step", "track_step"),
+        choices=(
+            "prompt_point_step",
+            "prompt_box_step",
+            "prompt_mask_step",
+            "track_step",
+        ),
     )
     export.add_argument(
         "--fp32-layernorm-role",
         action="append",
-        choices=("encoder", "prompt_point_step", "prompt_box_step", "track_step"),
+        choices=(
+            "encoder",
+            "prompt_point_step",
+            "prompt_box_step",
+            "prompt_mask_step",
+            "track_step",
+        ),
     )
 
     build = subparsers.add_parser("build", help="build TensorRT engines on Thor")
@@ -65,7 +76,13 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--build-role",
         action="append",
-        choices=("encoder", "prompt_point_step", "prompt_box_step", "track_step"),
+        choices=(
+            "encoder",
+            "prompt_point_step",
+            "prompt_box_step",
+            "prompt_mask_step",
+            "track_step",
+        ),
     )
     build.add_argument("--allow-non-thor", action="store_true", help=argparse.SUPPRESS)
 
@@ -87,7 +104,13 @@ def _parser() -> argparse.ArgumentParser:
     engine_benchmark.add_argument("--engine", required=True)
     engine_benchmark.add_argument(
         "--role",
-        choices=("encoder", "prompt_point_step", "prompt_box_step", "track_step"),
+        choices=(
+            "encoder",
+            "prompt_point_step",
+            "prompt_box_step",
+            "prompt_mask_step",
+            "track_step",
+        ),
         required=True,
     )
     engine_benchmark.add_argument("--batch", type=int, choices=(1, 2, 4, 8), default=1)

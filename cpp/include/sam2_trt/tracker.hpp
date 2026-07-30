@@ -9,7 +9,7 @@
 
 namespace sam2_trt {
 
-enum class PromptKind { Point, Box };
+enum class PromptKind { Point, Box, Mask };
 
 struct Prompt {
   PromptKind kind{PromptKind::Point};
@@ -17,6 +17,10 @@ struct Prompt {
   float y0{};
   float x1{};
   float y1{};
+  int mask_width{};
+  int mask_height{};
+  std::size_t mask_stride{};
+  std::vector<std::uint8_t> mask;
 };
 
 struct ObjectMask {

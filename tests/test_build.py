@@ -40,6 +40,11 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
     def test_track_batch_eight_is_split_across_profiles(self):
         self.assertEqual(_profile_batches("track_step"), (1, 2, 4))
         self.assertEqual(_profile_batches("prompt_point_step"), (1, 2, 4, 8))
+        self.assertEqual(_profile_batches("prompt_mask_step"), (1, 2, 4, 8))
+        self.assertEqual(
+            _shape_for("prompt_mask_step", "mask_input", 4, "opt"),
+            (4, 1, 1024, 1024),
+        )
 
     def test_track_profile_can_optimize_for_full_runtime_state(self):
         self.assertEqual(_profile_opt_endpoint("track_step", True), "max")
@@ -61,7 +66,12 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
             source = Path(directory) / "source"
             root.mkdir()
             source.mkdir()
-            roles = ("prompt_point_step", "prompt_box_step", "track_step")
+            roles = (
+                "prompt_point_step",
+                "prompt_box_step",
+                "prompt_mask_step",
+                "track_step",
+            )
             records = []
             for role in roles:
                 (root / f"{role}.onnx").write_bytes(f"{role}-onnx".encode())
@@ -123,7 +133,7 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
                 self.assertTrue((root / f"{role}.fp16.engine").samefile(source / f"{role}.fp16.engine"))
             build = json.loads((root / "build.json").read_text())
             self.assertEqual(build["built_engines"], ["encoder.fp16.engine"])
-            self.assertEqual(len(build["reused_engines"]), 3)
+            self.assertEqual(len(build["reused_engines"]), 4)
 
 
 if __name__ == "__main__":

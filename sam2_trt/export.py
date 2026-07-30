@@ -189,6 +189,35 @@ def _modules(torch, downstream, encoder, image_position):
             )
             return high_masks, ious, pointer, object_score, memory, memory_position[-1]
 
+    class MaskPromptStep(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, high0, high1, embedding, mask_input):
+            batch = embedding.shape[0]
+            current = embedding.flatten(2).permute(2, 0, 1)
+            pix = current.permute(1, 2, 0).reshape(batch, 256, 64, 64)
+            outputs = self.model._use_mask_as_output(
+                pix, [high0, high1], mask_input
+            )
+            _, _, ious, _, high_masks, pointer, object_score = outputs
+            memory, memory_position = self.model._encode_new_memory(
+                current_vision_feats=[current],
+                feat_sizes=[(64, 64)],
+                pred_masks_high_res=high_masks,
+                object_score_logits=object_score,
+                is_mask_from_pts=True,
+            )
+            return (
+                high_masks,
+                ious,
+                pointer,
+                object_score,
+                memory,
+                memory_position[-1],
+            )
+
     class TrackStep(torch.nn.Module):
         def __init__(self, model):
             super().__init__()
@@ -270,6 +299,7 @@ def _modules(torch, downstream, encoder, image_position):
         encoder_module,
         PromptStep(downstream, True),
         PromptStep(downstream, False),
+        MaskPromptStep(downstream),
         TrackStep(downstream),
     )
 
@@ -348,7 +378,13 @@ def export_bundle(
     import torch
 
     torch_dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}[dtype]
-    valid_roles = {"encoder", "prompt_point_step", "prompt_box_step", "track_step"}
+    valid_roles = {
+        "encoder",
+        "prompt_point_step",
+        "prompt_box_step",
+        "prompt_mask_step",
+        "track_step",
+    }
     unknown_roles = set(fp32_layernorm_roles).difference(valid_roles)
     if unknown_roles:
         raise ValueError(f"unknown FP32 LayerNorm roles: {sorted(unknown_roles)}")
@@ -390,12 +426,17 @@ def export_bundle(
         official = downstream.forward_image(dummy)
         _, _, positions, sizes = downstream._prepare_backbone_features(official)
         image_position = positions[-1].permute(1, 2, 0).reshape(1, 256, *sizes[-1])
-        encoder_module, point_prompt_module, box_prompt_module, track_module = _modules(
-            torch, downstream, encoder, image_position
-        )
+        (
+            encoder_module,
+            point_prompt_module,
+            box_prompt_module,
+            mask_prompt_module,
+            track_module,
+        ) = _modules(torch, downstream, encoder, image_position)
         encoder_module.eval()
         point_prompt_module.eval()
         box_prompt_module.eval()
+        mask_prompt_module.eval()
         track_module.eval()
 
         common_outputs = [
@@ -434,6 +475,9 @@ def export_bundle(
         embedding = torch.zeros(export_batch, 256, 64, 64, device=device, dtype=torch_dtype)
         coords = torch.zeros(export_batch, 2, 2, device=device, dtype=torch_dtype)
         labels = torch.tensor([[2, 3]], dtype=torch.int32, device=device).expand(export_batch, -1)
+        mask_input = torch.zeros(
+            export_batch, 1, 1024, 1024, device=device, dtype=torch_dtype
+        )
         batch_outputs = {name: {0: "batch"} for name in common_outputs}
         source = Path(reuse_downstream_dir).resolve() if reuse_downstream_dir else None
 
@@ -471,6 +515,46 @@ def export_bundle(
                         },
                         autocast_dtype=torch_dtype if dtype != "fp32" else None,
                     )
+
+        mask_destination = output / "prompt_mask_step.onnx"
+        if "prompt_mask_step" in selected_reuse_roles:
+            source_file = source / mask_destination.name
+            if not source_file.is_file():
+                raise FileNotFoundError(
+                    f"reused downstream graph is missing: {source_file}"
+                )
+            mask_destination.unlink(missing_ok=True)
+            try:
+                os.link(source_file, mask_destination)
+            except OSError:
+                shutil.copy2(source_file, mask_destination)
+        else:
+            with (
+                fp32_layer_norm_export(torch, mask_prompt_module)
+                if "prompt_mask_step" in fp32_layernorm_roles
+                else contextlib.nullcontext()
+            ):
+                _export_one(
+                    torch,
+                    mask_prompt_module,
+                    (high0, high1, embedding, mask_input),
+                    mask_destination,
+                    [
+                        "high_res_s0",
+                        "high_res_s1",
+                        "image_embedding",
+                        "mask_input",
+                    ],
+                    common_outputs,
+                    {
+                        "high_res_s0": {0: "batch"},
+                        "high_res_s1": {0: "batch"},
+                        "image_embedding": {0: "batch"},
+                        "mask_input": {0: "batch"},
+                        **batch_outputs,
+                    },
+                    autocast_dtype=torch_dtype if dtype != "fp32" else None,
+                )
 
         if "track_step" in selected_reuse_roles:
             source_file = source / "track_step.onnx"
@@ -548,6 +632,7 @@ def export_bundle(
                     "encoder.onnx",
                     "prompt_point_step.onnx",
                     "prompt_box_step.onnx",
+                    "prompt_mask_step.onnx",
                     "track_step.onnx",
                 ],
                 "encoder_exporter": spec.encoder_exporter,

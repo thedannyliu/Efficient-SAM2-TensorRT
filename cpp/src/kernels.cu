@@ -71,6 +71,32 @@ __global__ void mask_kernel(const T* input, int sw, int sh, std::uint8_t* output
 }
 
 template <class T>
+__global__ void preprocess_mask_kernel(
+    const std::uint8_t* input, int width, int height, std::size_t stride,
+    T* output) {
+  const int x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= 1024 || y >= 1024) return;
+  const float source_x = (x + 0.5f) * width / 1024.0f - 0.5f;
+  const float source_y = (y + 0.5f) * height / 1024.0f - 0.5f;
+  const int base_x = static_cast<int>(floorf(source_x));
+  const int base_y = static_cast<int>(floorf(source_y));
+  const int x0 = max(0, min(width - 1, base_x));
+  const int y0 = max(0, min(height - 1, base_y));
+  const int x1 = max(0, min(width - 1, base_x + 1));
+  const int y1 = max(0, min(height - 1, base_y + 1));
+  const float dx = source_x - floorf(source_x);
+  const float dy = source_y - floorf(source_y);
+  const float a = input[y0 * stride + x0];
+  const float b = input[y0 * stride + x1];
+  const float c = input[y1 * stride + x0];
+  const float d = input[y1 * stride + x1];
+  const float top = a + dx * (b - a);
+  const float value = top + dy * ((c + dx * (d - c)) - top);
+  output[y * 1024 + x] = convert<T>(value >= 127.5f ? 1.0f : 0.0f);
+}
+
+template <class T>
 __global__ void memory_kernel(
     const T* source, T* destination, int memory_index, int batch_index,
     int memory_count, int batch, int channels, int height, int width) {
@@ -110,6 +136,14 @@ void preprocess(const std::uint8_t* input, int width, int height, std::size_t st
   preprocess_kernel<<<dim3(32, 32), dim3(32, 32), 0, stream>>>(input, width, height, stride, static_cast<T*>(output));
 }
 
+template <class T>
+void preprocess_mask(
+    const std::uint8_t* input, int width, int height, std::size_t stride,
+    void* output, cudaStream_t stream) {
+  preprocess_mask_kernel<<<dim3(32, 32), dim3(32, 32), 0, stream>>>(
+      input, width, height, stride, static_cast<T*>(output));
+}
+
 }  // namespace
 
 void launch_preprocess_rgb8(const std::uint8_t* input, int width, int height, std::size_t stride, void* output, nvinfer1::DataType dtype, cudaStream_t stream) {
@@ -117,6 +151,20 @@ void launch_preprocess_rgb8(const std::uint8_t* input, int width, int height, st
   else if (dtype == nvinfer1::DataType::kHALF) preprocess<__half>(input, width, height, stride, output, stream);
   else if (dtype == nvinfer1::DataType::kBF16) preprocess<__nv_bfloat16>(input, width, height, stride, output, stream);
   else throw std::invalid_argument("unsupported preprocess dtype");
+}
+
+void launch_preprocess_mono8_mask(
+    const std::uint8_t* input, int width, int height, std::size_t stride,
+    void* output, nvinfer1::DataType dtype, cudaStream_t stream) {
+  if (dtype == nvinfer1::DataType::kFLOAT)
+    preprocess_mask<float>(input, width, height, stride, output, stream);
+  else if (dtype == nvinfer1::DataType::kHALF)
+    preprocess_mask<__half>(input, width, height, stride, output, stream);
+  else if (dtype == nvinfer1::DataType::kBF16)
+    preprocess_mask<__nv_bfloat16>(
+        input, width, height, stride, output, stream);
+  else
+    throw std::invalid_argument("unsupported mask preprocess dtype");
 }
 
 void launch_mask_to_mono8(const void* logits, nvinfer1::DataType dtype, int sw, int sh, std::uint8_t* output, int width, int height, cudaStream_t stream) {

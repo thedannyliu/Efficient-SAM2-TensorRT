@@ -1,6 +1,7 @@
 #include "sam2_trt_ros/sam2_trt_node.hpp"
 
 #include "sam2_trt/tracker.hpp"
+#include "sam2_trt_msgs/srv/add_mask.hpp"
 #include "sam2_trt_msgs/srv/add_object.hpp"
 #include "sam2_trt_msgs/srv/switch_model.hpp"
 
@@ -96,6 +97,33 @@ class Sam2TrtNode final : public rclcpp::Node {
         image_topic, rclcpp::SensorDataQoS().keep_last(1),
         [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
           enqueue_frame(std::move(message), SteadyClock::now(), 0.0, false);
+        });
+    add_mask_service_ = create_service<sam2_trt_msgs::srv::AddMask>(
+        "/sam/add_mask",
+        [this](sam2_trt_msgs::srv::AddMask::Request::SharedPtr request,
+               sam2_trt_msgs::srv::AddMask::Response::SharedPtr response) {
+          try {
+            const auto& mask = request->mask;
+            if (mask.encoding != sensor_msgs::image_encodings::MONO8)
+              throw std::invalid_argument("mask prompt must use mono8 encoding");
+            if (mask.width < 1 || mask.height < 1 || mask.step < mask.width ||
+                mask.data.size() <
+                    static_cast<std::size_t>(mask.step) * mask.height)
+              throw std::invalid_argument("mask prompt payload is incomplete");
+            sam2_trt::Prompt prompt;
+            prompt.kind = sam2_trt::PromptKind::Mask;
+            prompt.mask_width = static_cast<int>(mask.width);
+            prompt.mask_height = static_cast<int>(mask.height);
+            prompt.mask_stride = mask.step;
+            prompt.mask = mask.data;
+            std::lock_guard lock(tracker_mutex_);
+            response->object_id = tracker_->add_object(prompt);
+            ++object_count_;
+            response->success = true;
+          } catch (const std::exception& error) {
+            response->success = false;
+            response->message = error.what();
+          }
         });
     add_service_ = create_service<sam2_trt_msgs::srv::AddObject>(
         "/sam/add_object",
@@ -651,6 +679,7 @@ class Sam2TrtNode final : public rclcpp::Node {
       preview_label_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr result_publisher_;
   rclcpp::Service<sam2_trt_msgs::srv::AddObject>::SharedPtr add_service_;
+  rclcpp::Service<sam2_trt_msgs::srv::AddMask>::SharedPtr add_mask_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
   rclcpp::Service<sam2_trt_msgs::srv::SwitchModel>::SharedPtr
       switch_model_service_;

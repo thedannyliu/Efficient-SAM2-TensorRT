@@ -139,7 +139,7 @@ def compare_prompt_masks(
         official = downstream.forward_image(dummy)
         _, _, positions, sizes = downstream._prepare_backbone_features(official)
         image_position = positions[-1].permute(1, 2, 0).reshape(1, 256, *sizes[-1])
-        encoder_module, point_module, box_module, _ = _modules(
+        encoder_module, point_module, box_module, _, _ = _modules(
             torch, downstream, encoder, image_position
         )
         prompt_module = point_module if point is not None else box_module
