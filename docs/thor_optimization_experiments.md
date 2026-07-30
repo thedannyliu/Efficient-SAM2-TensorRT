@@ -643,6 +643,53 @@ tracking contexts, the measured one/two/four-object model rates were
 32.43/19.13/11.26 FPS. This display scheduling does not change TensorRT
 precision, model operations, masks, or per-object state.
 
+## TensorRT object-bucket experiment
+
+The runtime bucket design was adapted from
+`SAM2-Distillation-Pipeline/docs/deployment/sam2_tinyvit_multiobject_thor.md`.
+The reference Python implementation groups synchronized per-object histories
+into capacity-four dynamic batches. Commit `ff2b5bf` implements the matching
+TensorRT scheduler boundary:
+
+- stable object order and independent per-object memories are preserved;
+- only objects with equal selected memory/pointer counts share a batch;
+- capacities 1, 2, and 4 are selectable with `track_bucket_size`;
+- sessions below `track_bucket_min_objects` retain the batch-1 path;
+- batch rows are packed on CUDA and outputs are split back to the original IDs;
+- every result row records the configured and active bucket route.
+
+This path is opt-in because the existing Thor track engine strongly favors
+parallel batch-1 contexts. Same-session TV5M FP16, 848x480@60, headless mode-2
+results for four objects were:
+
+| Bucket size | Tracker latency | Tracking FPS | Source age | Decision |
+| ---: | ---: | ---: | ---: | --- |
+| 1 | 86.49 ms | 11.53 | 101.16 ms | baseline |
+| 2 | 189.90 ms | 5.26 | 203.25 ms | reject |
+| 4 | 198.33 ms | 5.04 | 213.93 ms | reject |
+
+At eight objects, bucket 4 measured 394.83 ms, 2.53 FPS, and 409.57 ms source
+age, versus the existing batch-1/concurrency-4 result of 162.78 ms, 6.14 FPS,
+and 176.86 ms. The engine-only batch 1/2/4 means were
+14.65/54.30/111.40 ms. Unlike the H100 PyTorch reference, object throughput
+per engine call nearly halves when batch increases on Thor TensorRT.
+
+The experiment also found that the builder optimized track profiles around
+four memories and eight pointers while steady runtime reaches seven and
+sixteen. Commit `08ae58d` adds `--track-opt-max-state`. Rebuilding only the
+track engine took 1029 seconds and used up to 2.60 GB activation memory. It
+did not rescue batch 2/4, but the batch-1 four-object pipeline improved:
+
+| Candidate | Tracker latency | Tracking FPS | Source age |
+| --- | ---: | ---: | ---: |
+| Original tactics | 86.49 ms | 11.53 | 101.16 ms |
+| Full-state-opt tactics | 82.82 ms | 12.03 | 94.92 ms |
+
+This is a 4.2% latency reduction and 4.4% tracking-FPS increase without
+changing ONNX, weights, or precision. It remains a candidate until
+same-input mask agreement is recorded. Bucket size 1 remains the deployed
+default.
+
 ## SAM 3.1 Object Multiplex applicability
 
 The official SAM 3.1 release and source were reviewed at upstream commit
