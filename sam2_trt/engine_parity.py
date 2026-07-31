@@ -68,7 +68,25 @@ def compare_engines(
         or role == "encoder"
         else (1, 2, 4, 8).index(batch)
     )
-    baseline_outputs = baseline.run(inputs, profile=baseline_profile)
+    baseline_inputs = inputs
+    if role == "track_shared_image_step":
+        baseline_inputs = {
+            name: (
+                tensor.expand(batch, *tensor.shape[1:]).contiguous()
+                if name
+                in {
+                    "high_res_s0",
+                    "high_res_s1",
+                    "image_embedding",
+                    "image_position",
+                }
+                else tensor
+            )
+            for name, tensor in inputs.items()
+        }
+    baseline_outputs = baseline.run(
+        baseline_inputs, profile=baseline_profile
+    )
     candidate_outputs = candidate.run(inputs, profile=0)
     torch.cuda.synchronize()
 

@@ -39,6 +39,9 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
 
     def test_track_batch_eight_is_split_across_profiles(self):
         self.assertEqual(_profile_batches("track_step"), (1, 2, 4))
+        self.assertEqual(
+            _profile_batches("track_shared_image_step"), (1, 2, 4)
+        )
         self.assertEqual(_profile_batches("prompt_point_step"), (1, 2, 4, 8))
         self.assertEqual(_profile_batches("prompt_mask_step"), (1, 2, 4, 8))
         self.assertEqual(
@@ -51,7 +54,22 @@ class TensorRtNetworkFlagsTest(unittest.TestCase):
 
     def test_track_profile_can_optimize_for_full_runtime_state(self):
         self.assertEqual(_profile_opt_endpoint("track_step", True), "max")
+        self.assertEqual(
+            _profile_opt_endpoint("track_shared_image_step", True), "max"
+        )
         self.assertEqual(_profile_opt_endpoint("track_step", False), "opt")
+        self.assertEqual(
+            _shape_for(
+                "track_shared_image_step", "image_embedding", 4, "max"
+            ),
+            (1, 256, 64, 64),
+        )
+        self.assertEqual(
+            _shape_for(
+                "track_shared_image_step", "mask_memory", 4, "max"
+            ),
+            (7, 4096, 4, 64),
+        )
         self.assertEqual(
             _profile_opt_endpoint("prompt_point_step", True), "opt"
         )

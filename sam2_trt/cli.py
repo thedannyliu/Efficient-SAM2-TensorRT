@@ -17,6 +17,7 @@ from .engine_parity import compare_engines, write_engine_parity
 from .pytorch_benchmark import benchmark_pytorch_graphs, write_pytorch_graph_benchmark
 from .prompt_parity import compare_prompt_masks
 from .mask_prompt_parity import compare_mask_prompt
+from .onnx_surgery import rewrite_track_shared_image_batch
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -102,6 +103,7 @@ def _parser() -> argparse.ArgumentParser:
             "prompt_box_step",
             "prompt_mask_step",
             "track_step",
+            "track_shared_image_step",
         ),
         required=True,
     )
@@ -149,6 +151,7 @@ def _parser() -> argparse.ArgumentParser:
             "prompt_box_step",
             "prompt_mask_step",
             "track_step",
+            "track_shared_image_step",
         ),
         required=True,
     )
@@ -176,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
             "prompt_box_step",
             "prompt_mask_step",
             "track_step",
+            "track_shared_image_step",
         ),
         required=True,
     )
@@ -189,6 +193,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     engine_parity.add_argument("--seed", type=int, default=0)
     engine_parity.add_argument("--output", required=True)
+
+    shared_track = subparsers.add_parser(
+        "rewrite-track-shared-image",
+        help="rewrite a track graph to accept batch-one image features",
+    )
+    shared_track.add_argument("--input", required=True)
+    shared_track.add_argument("--output", required=True)
 
     pytorch_graphs = subparsers.add_parser(
         "benchmark-pytorch-graphs", help="microbenchmark the matching PyTorch export graphs"
@@ -313,6 +324,22 @@ def main(argv: list[str] | None = None) -> int:
                     "profile_batches": args.profile_batch,
                     "inputs": inputs,
                     "outputs": outputs,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "rewrite-track-shared-image":
+        rewritten = rewrite_track_shared_image_batch(
+            args.input, args.output
+        )
+        print(
+            json.dumps(
+                {
+                    "input": str(Path(args.input).resolve()),
+                    "output": str(Path(args.output).resolve()),
+                    "rewritten_inputs": rewritten,
                 },
                 indent=2,
                 sort_keys=True,

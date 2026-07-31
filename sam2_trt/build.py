@@ -43,8 +43,17 @@ def _shape_for(role: str, name: str, batch: int, endpoint: str):
         "object_pointers": (pointer_frames, batch, 256),
         "pointer_frame_distance": (pointer_frames, batch),
     }
-    del role
+    if role == "track_shared_image_step" and name in _TRACK_IMAGE_INPUTS:
+        return (1, *shapes[name][1:])
     return shapes[name]
+
+
+_TRACK_IMAGE_INPUTS = {
+    "high_res_s0",
+    "high_res_s1",
+    "image_embedding",
+    "image_position",
+}
 
 
 def _network_flags(trt):
@@ -61,7 +70,7 @@ def _profile_batches(
 ) -> tuple[int, ...]:
     if role == "encoder":
         supported = (1,)
-    elif role == "track_step":
+    elif role in {"track_step", "track_shared_image_step"}:
         supported = (1, 2, 4)
     else:
         supported = (1, 2, 4, 8)
@@ -78,7 +87,12 @@ def _profile_batches(
 
 
 def _profile_opt_endpoint(role: str, track_opt_max_state: bool) -> str:
-    return "max" if role == "track_step" and track_opt_max_state else "opt"
+    return (
+        "max"
+        if role in {"track_step", "track_shared_image_step"}
+        and track_opt_max_state
+        else "opt"
+    )
 
 
 def _validate_builder_options(builder_optimization_level: int, max_aux_streams: int) -> None:

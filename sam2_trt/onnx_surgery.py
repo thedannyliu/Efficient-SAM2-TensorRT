@@ -3,6 +3,119 @@ from __future__ import annotations
 from pathlib import Path
 
 
+_TRACK_IMAGE_FEATURES = {
+    "high_res_s0": (32, 256, 256),
+    "high_res_s1": (64, 128, 128),
+    "image_embedding": (256, 64, 64),
+    "image_position": (256, 64, 64),
+}
+
+
+def rewrite_track_shared_image_batch(
+    source_path: str | Path, destination_path: str | Path
+) -> int:
+    """Keep per-frame image features at batch one and broadcast in the graph."""
+    import numpy as np
+    import onnx
+    from onnx import helper, numpy_helper
+
+    model = onnx.load(Path(source_path))
+    inputs = {value.name: value for value in model.graph.input}
+    missing = set(_TRACK_IMAGE_FEATURES).difference(inputs)
+    if missing or "mask_memory" not in inputs:
+        raise ValueError(
+            f"track graph is missing inputs: {sorted(missing | ({'mask_memory'} - inputs.keys()))}"
+        )
+
+    prefix = "sam2_trt_shared_image"
+    existing_names = {
+        name
+        for node in model.graph.node
+        for name in (*node.input, *node.output)
+        if name
+    }
+    if any(name.startswith(prefix) for name in existing_names):
+        raise ValueError("track graph already has shared-image broadcast nodes")
+
+    for node in model.graph.node:
+        for index, name in enumerate(node.input):
+            if name in _TRACK_IMAGE_FEATURES:
+                node.input[index] = f"{name}_{prefix}_expanded"
+
+    nodes = []
+    batch_shape = f"{prefix}_memory_shape"
+    batch_scalar = f"{prefix}_batch_scalar"
+    batch_vector = f"{prefix}_batch_vector"
+    gather_index = f"{prefix}_batch_axis"
+    unsqueeze_axes = f"{prefix}_unsqueeze_axes"
+    model.graph.initializer.extend(
+        (
+            numpy_helper.from_array(
+                np.asarray(2, dtype=np.int64), gather_index
+            ),
+            numpy_helper.from_array(
+                np.asarray([0], dtype=np.int64), unsqueeze_axes
+            ),
+        )
+    )
+    nodes.extend(
+        (
+            helper.make_node(
+                "Shape", ["mask_memory"], [batch_shape],
+                name=f"{prefix}_Shape",
+            ),
+            helper.make_node(
+                "Gather",
+                [batch_shape, gather_index],
+                [batch_scalar],
+                axis=0,
+                name=f"{prefix}_Gather",
+            ),
+            helper.make_node(
+                "Unsqueeze",
+                [batch_scalar, unsqueeze_axes],
+                [batch_vector],
+                name=f"{prefix}_Unsqueeze",
+            ),
+        )
+    )
+    for name, feature_shape in _TRACK_IMAGE_FEATURES.items():
+        tensor_type = inputs[name].type.tensor_type
+        first_dimension = tensor_type.shape.dim[0]
+        first_dimension.ClearField("dim_param")
+        first_dimension.dim_value = 1
+        suffix = f"{prefix}_{name}_suffix"
+        target = f"{prefix}_{name}_target"
+        model.graph.initializer.append(
+            numpy_helper.from_array(
+                np.asarray(feature_shape, dtype=np.int64), suffix
+            )
+        )
+        nodes.extend(
+            (
+                helper.make_node(
+                    "Concat",
+                    [batch_vector, suffix],
+                    [target],
+                    axis=0,
+                    name=f"{prefix}_{name}_Concat",
+                ),
+                helper.make_node(
+                    "Expand",
+                    [name, target],
+                    [f"{name}_{prefix}_expanded"],
+                    name=f"{prefix}_{name}_Expand",
+                ),
+            )
+        )
+    original_nodes = list(model.graph.node)
+    del model.graph.node[:]
+    model.graph.node.extend((*nodes, *original_nodes))
+    onnx.checker.check_model(model)
+    onnx.save(model, Path(destination_path))
+    return len(_TRACK_IMAGE_FEATURES)
+
+
 def rewrite_dynamic_batch_resize(path: str | Path) -> int:
     """Rewrite sizes-based 4-D ONNX Resize nodes to batch-safe scales.
 
