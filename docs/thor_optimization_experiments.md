@@ -779,3 +779,41 @@ model. The proposed research branch is:
    memory adapter, and distill the SAM 3.1 multiplex downstream path;
 4. promote it only if video J&F and per-frame/object mask agreement remain at
    least 0.95 and Thor improves both throughput and memory use.
+
+## Direct GI-mask initialization experiment
+
+Branch `opt/thor-acceleration-v2`, commit `943866e`, adds a fifth optional
+TensorRT graph, `prompt_mask_step`. It implements SAM2.1's native mask-input
+behavior instead of converting a General Instinct text mask to a bounding box.
+Existing bundles without this engine still load and reject mask requests
+explicitly; point, box, and track behavior is unchanged.
+
+The first TV5M candidate reused the exact deployed encoder, point, box, and
+track graphs/engines. Only the mask graph was built. The mask plan supports
+batch 1/2/4/8 and measured:
+
+| Batch | Mean | p90 | Object prompts/s |
+|---:|---:|---:|---:|
+| 1 | 1.797 ms | 1.852 ms | 556.64 |
+| 2 | 3.416 ms | 3.469 ms | 585.44 |
+| 4 | 7.354 ms | 7.380 ms | 543.92 |
+| 8 | 15.056 ms | 15.188 ms | 531.36 |
+
+Six live GI masks (`bag`: two, `chair`: four) produced 1.000 mean/minimum
+PyTorch-versus-TensorRT mask IoU. Minimum object-pointer and new-memory cosine
+were 0.9999985 and 0.9999442. The mask itself is therefore preserved exactly
+at the binary decision boundary, and the conditioning state comfortably
+passes the 95% gate.
+
+This optimization affects first-frame handoff only. Every subsequent frame
+uses the unchanged `track_step`, so steady-state model latency is a function
+of model and object count, not whether initialization used a box or mask.
+The route remains opt-in until same-video temporal quality is compared against
+ground truth.
+
+Ignored artifacts:
+
+```text
+results/benchmarks/mask_prompt_v2_20260730/
+bundles/sam2.1-tinyvit-5m/fp16_mask_v2_20260730/
+```
