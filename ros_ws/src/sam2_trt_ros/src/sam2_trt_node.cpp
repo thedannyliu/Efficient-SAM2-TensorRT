@@ -400,12 +400,26 @@ class Sam2TrtNode final : public rclcpp::Node {
   sensor_msgs::msg::Image make_preview(
       const sensor_msgs::msg::Image& frame,
       const std::vector<sam2_trt::ObjectMask>& masks) const {
-    static constexpr std::array<std::array<std::uint8_t, 3>, 4> colors{{
-        {{0, 255, 0}},
-        {{255, 128, 0}},
-        {{0, 128, 255}},
-        {{255, 0, 255}},
-    }};
+    static const auto blend_lut = [] {
+      static constexpr std::array<std::array<std::uint8_t, 3>, 4> colors{{
+          {{0, 255, 0}},
+          {{255, 128, 0}},
+          {{0, 128, 255}},
+          {{255, 0, 255}},
+      }};
+      std::array<
+          std::array<std::array<std::uint8_t, 256>, 3>, colors.size()>
+          table{};
+      for (std::size_t color = 0; color < colors.size(); ++color) {
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+          for (std::size_t value = 0; value < 256; ++value) {
+            table[color][channel][value] = static_cast<std::uint8_t>(
+                value * 0.55f + colors[color][channel] * 0.45f);
+          }
+        }
+      }
+      return table;
+    }();
     sensor_msgs::msg::Image preview;
     preview.header = frame.header;
     preview.height = static_cast<std::uint32_t>(preview_height_);
@@ -416,36 +430,51 @@ class Sam2TrtNode final : public rclcpp::Node {
     preview.data.resize(
         static_cast<std::size_t>(preview.step) * preview.height);
     const bool input_rgb = frame.encoding == sensor_msgs::image_encodings::RGB8;
+    std::vector<int> source_x(preview_width_);
+    std::vector<int> source_y(preview_height_);
+    for (int x = 0; x < preview_width_; ++x) {
+      source_x[x] = std::min(
+          static_cast<int>(frame.width) - 1,
+          x * static_cast<int>(frame.width) / preview_width_);
+    }
     for (int y = 0; y < preview_height_; ++y) {
-      const int source_y = std::min(
+      source_y[y] = std::min(
           static_cast<int>(frame.height) - 1,
           y * static_cast<int>(frame.height) / preview_height_);
+      const auto* source_row =
+          frame.data.data() + static_cast<std::size_t>(source_y[y]) * frame.step;
+      auto* output_row = preview.data.data() +
+          static_cast<std::size_t>(y) * preview.step;
       for (int x = 0; x < preview_width_; ++x) {
-        const int source_x = std::min(
-            static_cast<int>(frame.width) - 1,
-            x * static_cast<int>(frame.width) / preview_width_);
-        const auto source_offset =
-            static_cast<std::size_t>(source_y) * frame.step + source_x * 3;
-        const auto output_offset =
-            (static_cast<std::size_t>(y) * preview_width_ + x) * 3;
-        for (int channel = 0; channel < 3; ++channel) {
-          const int source_channel = input_rgb ? channel : 2 - channel;
-          preview.data[output_offset + channel] =
-              frame.data[source_offset + source_channel];
+        const auto* source_pixel = source_row + source_x[x] * 3;
+        auto* output_pixel = output_row + x * 3;
+        if (input_rgb) {
+          output_pixel[0] = source_pixel[0];
+          output_pixel[1] = source_pixel[1];
+          output_pixel[2] = source_pixel[2];
+        } else {
+          output_pixel[0] = source_pixel[2];
+          output_pixel[1] = source_pixel[1];
+          output_pixel[2] = source_pixel[0];
         }
-        for (std::size_t index = 0; index < masks.size(); ++index) {
-          const auto& mask = masks[index];
-          const auto mask_x = std::min(mask.width - 1, source_x);
-          const auto mask_y = std::min(mask.height - 1, source_y);
-          if (mask.mono8[static_cast<std::size_t>(mask_y) * mask.width + mask_x] == 0)
-            continue;
-          const auto& color = colors[
-              static_cast<std::size_t>(mask.object_id - 1) % colors.size()];
-          for (int channel = 0; channel < 3; ++channel) {
-            preview.data[output_offset + channel] = static_cast<std::uint8_t>(
-                preview.data[output_offset + channel] * 0.55f +
-                color[channel] * 0.45f);
-          }
+      }
+    }
+    for (const auto& mask : masks) {
+      const auto& object_lut = blend_lut[
+          static_cast<std::size_t>(mask.object_id - 1) % blend_lut.size()];
+      for (int y = 0; y < preview_height_; ++y) {
+        const int mask_y = std::min(mask.height - 1, source_y[y]);
+        const auto* mask_row = mask.mono8.data() +
+            static_cast<std::size_t>(mask_y) * mask.width;
+        auto* output_row = preview.data.data() +
+            static_cast<std::size_t>(y) * preview.step;
+        for (int x = 0; x < preview_width_; ++x) {
+          const int mask_x = std::min(mask.width - 1, source_x[x]);
+          if (mask_row[mask_x] == 0) continue;
+          auto* output_pixel = output_row + x * 3;
+          output_pixel[0] = object_lut[0][output_pixel[0]];
+          output_pixel[1] = object_lut[1][output_pixel[1]];
+          output_pixel[2] = object_lut[2][output_pixel[2]];
         }
       }
     }
