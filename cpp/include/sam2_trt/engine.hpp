@@ -52,6 +52,7 @@ class Engine {
     cudaGraph_t graph{};
     cudaGraphExec_t executable{};
     std::vector<std::uintptr_t> signature;
+    bool disabled{};
   };
   static void clear_graph(GraphCache& cache);
   std::unique_ptr<Logger> logger_;

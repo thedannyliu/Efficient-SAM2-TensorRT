@@ -212,26 +212,53 @@ void Engine::run_into(
   auto& cache = graph_caches_[context_index];
   if (cache.signature != signature) {
     clear_graph(cache);
+    cache.disabled = false;
     cache.signature = std::move(signature);
     if (!context->enqueueV3(stream))
       throw std::runtime_error("TensorRT graph-prime enqueueV3 failed");
     return;
   }
+  if (cache.disabled) {
+    if (!context->enqueueV3(stream))
+      throw std::runtime_error("TensorRT graph-fallback enqueueV3 failed");
+    return;
+  }
   if (!cache.executable) {
-    if (cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal) !=
-        cudaSuccess)
-      throw std::runtime_error("cudaStreamBeginCapture failed");
+    if (cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal) !=
+        cudaSuccess) {
+      cudaGetLastError();
+      cache.disabled = true;
+      if (!context->enqueueV3(stream))
+        throw std::runtime_error("TensorRT graph-fallback enqueueV3 failed");
+      return;
+    }
     if (!context->enqueueV3(stream)) {
       cudaGraph_t invalid_graph{};
       cudaStreamEndCapture(stream, &invalid_graph);
       if (invalid_graph) cudaGraphDestroy(invalid_graph);
-      throw std::runtime_error("TensorRT graph-capture enqueueV3 failed");
+      cudaGetLastError();
+      cache.disabled = true;
+      if (!context->enqueueV3(stream))
+        throw std::runtime_error("TensorRT graph-fallback enqueueV3 failed");
+      return;
     }
-    if (cudaStreamEndCapture(stream, &cache.graph) != cudaSuccess)
-      throw std::runtime_error("cudaStreamEndCapture failed");
+    if (cudaStreamEndCapture(stream, &cache.graph) != cudaSuccess) {
+      cudaGetLastError();
+      clear_graph(cache);
+      cache.disabled = true;
+      if (!context->enqueueV3(stream))
+        throw std::runtime_error("TensorRT graph-fallback enqueueV3 failed");
+      return;
+    }
     if (cudaGraphInstantiateWithFlags(
-            &cache.executable, cache.graph, 0) != cudaSuccess)
-      throw std::runtime_error("cudaGraphInstantiateWithFlags failed");
+            &cache.executable, cache.graph, 0) != cudaSuccess) {
+      cudaGetLastError();
+      clear_graph(cache);
+      cache.disabled = true;
+      if (!context->enqueueV3(stream))
+        throw std::runtime_error("TensorRT graph-fallback enqueueV3 failed");
+      return;
+    }
   }
   if (cudaGraphLaunch(cache.executable, stream) != cudaSuccess)
     throw std::runtime_error("cudaGraphLaunch failed");
