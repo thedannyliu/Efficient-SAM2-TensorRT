@@ -34,6 +34,7 @@ def benchmark_engine(
     shape_endpoint: str = "opt",
     warmup: int = 20,
     runs: int = 100,
+    cuda_graph: bool = False,
 ) -> dict[str, object]:
     import tensorrt as trt
     import torch
@@ -93,13 +94,24 @@ def benchmark_engine(
             raise RuntimeError("TensorRT warmup enqueue failed")
     stream.synchronize()
 
+    graph = None
+    if cuda_graph:
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            if not context.execute_async_v3(stream.cuda_stream):
+                raise RuntimeError("TensorRT CUDA Graph capture enqueue failed")
+
     timings = []
     for _ in range(runs):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record(stream)
-        if not context.execute_async_v3(stream.cuda_stream):
-            raise RuntimeError("TensorRT benchmark enqueue failed")
+        if graph is None:
+            if not context.execute_async_v3(stream.cuda_stream):
+                raise RuntimeError("TensorRT benchmark enqueue failed")
+        else:
+            with torch.cuda.stream(stream):
+                graph.replay()
         end.record(stream)
         end.synchronize()
         timings.append(float(start.elapsed_time(end)))
@@ -110,6 +122,7 @@ def benchmark_engine(
         "engine": str(Path(engine_path).resolve()),
         "role": role,
         "batch": batch,
+        "cuda_graph": cuda_graph,
         "shape_endpoint": shape_endpoint,
         "profile": profile,
         "warmup": warmup,

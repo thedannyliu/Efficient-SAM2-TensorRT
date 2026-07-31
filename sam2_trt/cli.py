@@ -163,6 +163,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     engine_benchmark.add_argument("--warmup", type=int, default=20)
     engine_benchmark.add_argument("--runs", type=int, default=100)
+    engine_benchmark.add_argument("--cuda-graph", action="store_true")
     engine_benchmark.add_argument("--output", required=True)
 
     engine_parity = subparsers.add_parser(
@@ -394,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             shape_endpoint=args.shape_endpoint,
             warmup=args.warmup,
             runs=args.runs,
+            cuda_graph=args.cuda_graph,
         )
         write_engine_benchmark(result, args.output)
         print(json.dumps(result, indent=2, sort_keys=True))
