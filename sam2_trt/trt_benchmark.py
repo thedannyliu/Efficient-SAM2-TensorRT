@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 from pathlib import Path
 from statistics import mean, median
@@ -96,10 +97,37 @@ def benchmark_engine(
 
     graph = None
     if cuda_graph:
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, stream=stream):
-            if not context.execute_async_v3(stream.cuda_stream):
-                raise RuntimeError("TensorRT CUDA Graph capture enqueue failed")
+        cudart = ctypes.CDLL("libcudart.so")
+        stream_pointer = ctypes.c_void_p(stream.cuda_stream)
+        graph_handle = ctypes.c_void_p()
+        executable_handle = ctypes.c_void_p()
+        cudart.cudaStreamBeginCapture.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        cudart.cudaStreamEndCapture.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        cudart.cudaGraphInstantiateWithFlags.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_void_p,
+            ctypes.c_ulonglong,
+        ]
+        cudart.cudaGraphLaunch.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        if cudart.cudaStreamBeginCapture(stream_pointer, 0) != 0:
+            raise RuntimeError("cudaStreamBeginCapture failed")
+        if not context.execute_async_v3(stream.cuda_stream):
+            raise RuntimeError("TensorRT CUDA Graph capture enqueue failed")
+        if cudart.cudaStreamEndCapture(
+            stream_pointer, ctypes.byref(graph_handle)
+        ) != 0:
+            raise RuntimeError("cudaStreamEndCapture failed")
+        if cudart.cudaGraphInstantiateWithFlags(
+            ctypes.byref(executable_handle), graph_handle, 0
+        ) != 0:
+            raise RuntimeError("cudaGraphInstantiateWithFlags failed")
+        graph = (cudart, stream_pointer, graph_handle, executable_handle)
 
     timings = []
     for _ in range(runs):
@@ -110,12 +138,15 @@ def benchmark_engine(
             if not context.execute_async_v3(stream.cuda_stream):
                 raise RuntimeError("TensorRT benchmark enqueue failed")
         else:
-            with torch.cuda.stream(stream):
-                graph.replay()
+            if graph[0].cudaGraphLaunch(graph[3], graph[1]) != 0:
+                raise RuntimeError("cudaGraphLaunch failed")
         end.record(stream)
         end.synchronize()
         timings.append(float(start.elapsed_time(end)))
 
+    if graph is not None:
+        graph[0].cudaGraphExecDestroy(graph[3])
+        graph[0].cudaGraphDestroy(graph[2])
     values = np.asarray(timings, dtype=np.float64)
     average = mean(timings)
     return {
