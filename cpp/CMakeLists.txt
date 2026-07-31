@@ -27,8 +27,11 @@ target_compile_options(sam2_trt_core PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3>)
 
 add_executable(state_selection_test tests/state_selection_test.cpp)
 target_include_directories(state_selection_test PRIVATE include)
+add_executable(fused_gather_test tests/fused_gather_test.cu)
+target_link_libraries(fused_gather_test PRIVATE sam2_trt_core)
 enable_testing()
 add_test(NAME state_selection_test COMMAND state_selection_test)
+add_test(NAME fused_gather_test COMMAND fused_gather_test)
 
 include(CMakePackageConfigHelpers)
 install(TARGETS sam2_trt_core EXPORT sam2_trt_coreTargets

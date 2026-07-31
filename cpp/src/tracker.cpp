@@ -109,6 +109,9 @@ struct Tracker::Impl {
     DeviceTensor memory;
     DeviceTensor memory_position;
     DeviceTensor object_pointers;
+    DeviceTensor memory_sources;
+    DeviceTensor memory_position_sources;
+    DeviceTensor pointer_sources;
     DeviceTensor temporal;
     DeviceTensor distance;
   };
@@ -140,6 +143,7 @@ struct Tracker::Impl {
   int track_concurrency;
   int track_bucket_size;
   int track_bucket_min_objects;
+  bool fused_state_gather;
   int next_id{1};
   int frame_index{0};
   std::vector<ObjectState> objects;
@@ -153,7 +157,8 @@ struct Tracker::Impl {
 
   Impl(
       const std::string& root, const std::string& precision, int maximum,
-      int concurrency, int bucket_size, int bucket_minimum)
+      int concurrency, int bucket_size, int bucket_minimum,
+      bool use_fused_state_gather)
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
@@ -164,7 +169,8 @@ struct Tracker::Impl {
         maximum_objects(maximum),
         track_concurrency(concurrency),
         track_bucket_size(bucket_size),
-        track_bucket_min_objects(bucket_minimum) {
+        track_bucket_min_objects(bucket_minimum),
+        fused_state_gather(use_fused_state_gather) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
     if (concurrency < 1 || concurrency > maximum)
       throw std::invalid_argument("track_concurrency must be in [1, max_objects]");
@@ -193,6 +199,12 @@ struct Tracker::Impl {
           {7, 4096, bucket_size, 64}, dtype, object_stream);
       scratch.object_pointers = allocate_tensor(
           {16, bucket_size, 256}, dtype, object_stream);
+      scratch.memory_sources = allocate_tensor(
+          {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+      scratch.memory_position_sources = allocate_tensor(
+          {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+      scratch.pointer_sources = allocate_tensor(
+          {16, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
       scratch.temporal = allocate_tensor(
           {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
       scratch.distance = allocate_tensor(
@@ -453,6 +465,25 @@ struct Tracker::Impl {
         scratch.object_pointers, {pointers, batch, 256});
     std::vector<int64_t> temporal(memories * batch);
     std::vector<int64_t> distance(pointers * batch);
+    std::vector<std::uint64_t> memory_sources;
+    std::vector<std::uint64_t> memory_position_sources;
+    std::vector<std::uint64_t> pointer_sources;
+    const bool fuse_pointers =
+        fused_state_gather &&
+        std::all_of(
+            selections.begin(), selections.end(),
+            [dtype](const auto& selected) {
+              return std::all_of(
+                  selected.pointers.begin(), selected.pointers.end(),
+                  [dtype](const auto& item) {
+                    return item.value->pointer.dtype == dtype;
+                  });
+            });
+    if (fused_state_gather) {
+      memory_sources.resize(memories * batch);
+      memory_position_sources.resize(memories * batch);
+      if (fuse_pointers) pointer_sources.resize(pointers * batch);
+    }
     for (int row = 0; row < batch; ++row) {
       const int source_row = std::min<int>(row, group.size() - 1);
       const auto& selected = selections[source_row];
@@ -461,19 +492,30 @@ struct Tracker::Impl {
         if (item.value->memory.dtype != dtype || item.value->memory_position.dtype != dtype)
           throw std::invalid_argument("memory dtype does not match track engine");
         temporal[index * batch + row] = item.position;
-        launch_pack_memory_bank(
-            item.value->memory.data, memory.data, dtype, index, row, batch,
-            4096, 64, execution_stream);
-        launch_pack_memory_bank(
-            item.value->memory_position.data, memory_position.data, dtype,
-            index, row, batch, 4096, 64, execution_stream);
+        if (fused_state_gather) {
+          memory_sources[index * batch + row] =
+              reinterpret_cast<std::uintptr_t>(item.value->memory.data);
+          memory_position_sources[index * batch + row] =
+              reinterpret_cast<std::uintptr_t>(
+                  item.value->memory_position.data);
+        } else {
+          launch_pack_memory_bank(
+              item.value->memory.data, memory.data, dtype, index, row, batch,
+              4096, 64, execution_stream);
+          launch_pack_memory_bank(
+              item.value->memory_position.data, memory_position.data, dtype,
+              index, row, batch, 4096, 64, execution_stream);
+        }
       }
       for (int index = 0; index < pointers; ++index) {
         const auto& item = selected.pointers[index];
         distance[index * batch + row] = item.position;
         const std::size_t offset = (static_cast<std::size_t>(index) * batch + row) * 256 * element_size(dtype);
         auto* destination = static_cast<std::byte*>(object_pointers.data) + offset;
-        if (item.value->pointer.dtype == dtype) {
+        if (fuse_pointers) {
+          pointer_sources[index * batch + row] =
+              reinterpret_cast<std::uintptr_t>(item.value->pointer.data);
+        } else if (item.value->pointer.dtype == dtype) {
           check_cuda(cudaMemcpyAsync(destination, item.value->pointer.data,
                                      256 * element_size(dtype), cudaMemcpyDeviceToDevice,
                                      execution_stream));
@@ -483,6 +525,40 @@ struct Tracker::Impl {
         } else {
           throw std::invalid_argument("unsupported object pointer dtype conversion");
         }
+      }
+    }
+    if (fused_state_gather) {
+      auto memory_source_tensor = tensor_view(
+          scratch.memory_sources, {memories, batch});
+      auto position_source_tensor = tensor_view(
+          scratch.memory_position_sources, {memories, batch});
+      check_cuda(cudaMemcpyAsync(
+          memory_source_tensor.data, memory_sources.data(),
+          memory_source_tensor.bytes, cudaMemcpyHostToDevice,
+          execution_stream));
+      check_cuda(cudaMemcpyAsync(
+          position_source_tensor.data, memory_position_sources.data(),
+          position_source_tensor.bytes, cudaMemcpyHostToDevice,
+          execution_stream));
+      launch_gather_memory_bank(
+          static_cast<const std::uint64_t*>(memory_source_tensor.data),
+          memory.data, dtype, memories, batch, 4096, 64,
+          execution_stream);
+      launch_gather_memory_bank(
+          static_cast<const std::uint64_t*>(position_source_tensor.data),
+          memory_position.data, dtype, memories, batch, 4096, 64,
+          execution_stream);
+      if (fuse_pointers) {
+        auto pointer_source_tensor = tensor_view(
+            scratch.pointer_sources, {pointers, batch});
+        check_cuda(cudaMemcpyAsync(
+            pointer_source_tensor.data, pointer_sources.data(),
+            pointer_source_tensor.bytes, cudaMemcpyHostToDevice,
+            execution_stream));
+        launch_gather_memory_bank(
+            static_cast<const std::uint64_t*>(pointer_source_tensor.data),
+            object_pointers.data, dtype, pointers, batch, 1, 256,
+            execution_stream);
       }
     }
     inputs["mask_memory"] = memory;
@@ -658,10 +734,10 @@ struct Tracker::Impl {
 Tracker::Tracker(
     const std::string& bundle, const std::string& precision, int maximum,
     int track_concurrency, int track_bucket_size,
-    int track_bucket_min_objects)
+    int track_bucket_min_objects, bool fused_state_gather)
     : impl_(std::make_unique<Impl>(
           bundle, precision, maximum, track_concurrency, track_bucket_size,
-          track_bucket_min_objects)) {}
+          track_bucket_min_objects, fused_state_gather)) {}
 Tracker::~Tracker() = default;
 
 int Tracker::add_object(const Prompt& prompt) {

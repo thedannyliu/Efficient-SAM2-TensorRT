@@ -44,7 +44,8 @@ class Tracker {
   Tracker(
       const std::string& bundle_directory, const std::string& precision,
       int max_objects = 8, int track_concurrency = 8,
-      int track_bucket_size = 1, int track_bucket_min_objects = 4);
+      int track_bucket_size = 1, int track_bucket_min_objects = 4,
+      bool fused_state_gather = false);
   ~Tracker();
   Tracker(const Tracker&) = delete;
   Tracker& operator=(const Tracker&) = delete;

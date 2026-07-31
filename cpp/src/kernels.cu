@@ -126,6 +126,29 @@ __global__ void pack_memory_bank_kernel(
 }
 
 template <class T>
+__global__ void gather_memory_bank_kernel(
+    const std::uint64_t* sources, T* destination, int memory_count, int batch,
+    int tokens, int channels) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t count =
+      static_cast<std::size_t>(memory_count) * tokens * batch * channels;
+  if (index >= count) return;
+  const int channel = static_cast<int>(index % channels);
+  const int batch_index =
+      static_cast<int>((index / channels) % batch);
+  const int token =
+      static_cast<int>((index / (static_cast<std::size_t>(channels) * batch)) %
+                       tokens);
+  const int memory_index = static_cast<int>(
+      index /
+      (static_cast<std::size_t>(channels) * batch * tokens));
+  const auto* source = reinterpret_cast<const T*>(
+      sources[memory_index * batch + batch_index]);
+  destination[index] = source[token * channels + channel];
+}
+
+template <class T>
 __global__ void conversion_kernel(const float* input, T* output, std::size_t count) {
   const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < count) output[index] = convert<T>(input[index]);
@@ -203,6 +226,29 @@ void launch_pack_memory_bank(
     pack_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(source),
         static_cast<__nv_bfloat16*>(destination), memory_index, batch_index,
+        batch, tokens, channels);
+  else
+    throw std::invalid_argument("unsupported memory dtype");
+}
+
+void launch_gather_memory_bank(
+    const std::uint64_t* sources, void* destination,
+    nvinfer1::DataType dtype, int memory_count, int batch, int tokens,
+    int channels, cudaStream_t stream) {
+  const std::size_t count =
+      static_cast<std::size_t>(memory_count) * batch * tokens * channels;
+  const int blocks = static_cast<int>((count + 255) / 256);
+  if (dtype == nvinfer1::DataType::kFLOAT)
+    gather_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
+        sources, static_cast<float*>(destination), memory_count, batch,
+        tokens, channels);
+  else if (dtype == nvinfer1::DataType::kHALF)
+    gather_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
+        sources, static_cast<__half*>(destination), memory_count, batch,
+        tokens, channels);
+  else if (dtype == nvinfer1::DataType::kBF16)
+    gather_memory_bank_kernel<<<blocks, 256, 0, stream>>>(
+        sources, static_cast<__nv_bfloat16*>(destination), memory_count,
         batch, tokens, channels);
   else
     throw std::invalid_argument("unsupported memory dtype");

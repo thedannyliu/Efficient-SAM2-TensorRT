@@ -24,6 +24,10 @@ void launch_pack_memory_bank(
     const void* source, void* destination, nvinfer1::DataType dtype,
     int memory_index, int batch_index, int batch, int tokens, int channels,
     cudaStream_t stream);
+void launch_gather_memory_bank(
+    const std::uint64_t* sources, void* destination,
+    nvinfer1::DataType dtype, int memory_count, int batch, int tokens,
+    int channels, cudaStream_t stream);
 void launch_float_conversion(
     const float* input, void* output, nvinfer1::DataType dtype,
     std::size_t count, cudaStream_t stream);
