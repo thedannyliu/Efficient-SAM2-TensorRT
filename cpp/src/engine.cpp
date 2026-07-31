@@ -70,9 +70,11 @@ static std::vector<char> read_plan(const std::string& path) {
 }
 
 Engine::Engine(
-    const std::string& plan_path, bool profile_zero_only, int context_copies)
+    const std::string& plan_path, bool profile_zero_only, int context_copies,
+    bool cuda_graph)
     : logger_(std::make_unique<Logger>()),
-      context_copies_(context_copies) {
+      context_copies_(context_copies),
+      cuda_graph_(cuda_graph) {
   if (context_copies_ < 1)
     throw std::invalid_argument("context_copies must be positive");
   const auto payload = read_plan(plan_path);
@@ -84,6 +86,7 @@ Engine::Engine(
       ? 1
       : std::max(1, engine_->getNbOptimizationProfiles());
   contexts_.reserve(profile_count_ * context_copies_);
+  graph_caches_.resize(profile_count_ * context_copies_);
   for (int profile = 0; profile < profile_count_; ++profile) {
     for (int copy = 0; copy < context_copies_; ++copy) {
       auto* context = engine_->createExecutionContext();
@@ -94,6 +97,10 @@ Engine::Engine(
 }
 
 Engine::~Engine() {
+  for (auto& cache : graph_caches_) {
+    if (cache.executable) cudaGraphExecDestroy(cache.executable);
+    if (cache.graph) cudaGraphDestroy(cache.graph);
+  }
   for (auto* context : contexts_) delete context;
   delete engine_;
   delete runtime_;
@@ -117,6 +124,17 @@ static std::vector<int64_t> from_dims(const nvinfer1::Dims& dims) {
   return shape;
 }
 
+void Engine::clear_graph(GraphCache& cache) {
+  if (cache.executable) {
+    cudaGraphExecDestroy(cache.executable);
+    cache.executable = nullptr;
+  }
+  if (cache.graph) {
+    cudaGraphDestroy(cache.graph);
+    cache.graph = nullptr;
+  }
+}
+
 std::map<std::string, DeviceTensor> Engine::run(
     const std::map<std::string, DeviceTensor>& inputs, int profile, cudaStream_t stream) {
   std::map<std::string, DeviceTensor> outputs;
@@ -132,8 +150,9 @@ void Engine::run_into(
     throw std::out_of_range("invalid TensorRT optimization profile");
   if (context_copy < 0 || context_copy >= context_copies_)
     throw std::out_of_range("invalid TensorRT execution context copy");
-  auto* context = contexts_[
-      static_cast<std::size_t>(profile * context_copies_ + context_copy)];
+  const auto context_index = static_cast<std::size_t>(
+      profile * context_copies_ + context_copy);
+  auto* context = contexts_[context_index];
   if (profile_count_ > 1 &&
       !context->setOptimizationProfileAsync(profile, stream))
     throw std::runtime_error("setOptimizationProfileAsync failed");
@@ -165,7 +184,57 @@ void Engine::run_into(
     if (!context->setTensorAddress(raw_name, existing->second.data))
       throw std::runtime_error("setTensorAddress failed: " + name);
   }
-  if (!context->enqueueV3(stream)) throw std::runtime_error("TensorRT enqueueV3 failed");
+  if (!cuda_graph_) {
+    if (!context->enqueueV3(stream))
+      throw std::runtime_error("TensorRT enqueueV3 failed");
+    return;
+  }
+
+  std::vector<std::uintptr_t> signature{
+      reinterpret_cast<std::uintptr_t>(stream)};
+  for (const auto& [name, tensor] : inputs) {
+    signature.push_back(static_cast<std::uintptr_t>(name.size()));
+    signature.push_back(reinterpret_cast<std::uintptr_t>(tensor.data));
+    signature.push_back(static_cast<std::uintptr_t>(tensor.bytes));
+    signature.push_back(static_cast<std::uintptr_t>(tensor.shape.size()));
+    for (const auto dimension : tensor.shape)
+      signature.push_back(static_cast<std::uintptr_t>(dimension));
+  }
+  for (const auto& [name, tensor] : outputs) {
+    signature.push_back(static_cast<std::uintptr_t>(name.size()));
+    signature.push_back(reinterpret_cast<std::uintptr_t>(tensor.data));
+    signature.push_back(static_cast<std::uintptr_t>(tensor.bytes));
+    signature.push_back(static_cast<std::uintptr_t>(tensor.shape.size()));
+    for (const auto dimension : tensor.shape)
+      signature.push_back(static_cast<std::uintptr_t>(dimension));
+  }
+
+  auto& cache = graph_caches_[context_index];
+  if (cache.signature != signature) {
+    clear_graph(cache);
+    cache.signature = std::move(signature);
+    if (!context->enqueueV3(stream))
+      throw std::runtime_error("TensorRT graph-prime enqueueV3 failed");
+    return;
+  }
+  if (!cache.executable) {
+    if (cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal) !=
+        cudaSuccess)
+      throw std::runtime_error("cudaStreamBeginCapture failed");
+    if (!context->enqueueV3(stream)) {
+      cudaGraph_t invalid_graph{};
+      cudaStreamEndCapture(stream, &invalid_graph);
+      if (invalid_graph) cudaGraphDestroy(invalid_graph);
+      throw std::runtime_error("TensorRT graph-capture enqueueV3 failed");
+    }
+    if (cudaStreamEndCapture(stream, &cache.graph) != cudaSuccess)
+      throw std::runtime_error("cudaStreamEndCapture failed");
+    if (cudaGraphInstantiateWithFlags(
+            &cache.executable, cache.graph, 0) != cudaSuccess)
+      throw std::runtime_error("cudaGraphInstantiateWithFlags failed");
+  }
+  if (cudaGraphLaunch(cache.executable, stream) != cudaSuccess)
+    throw std::runtime_error("cudaGraphLaunch failed");
 }
 
 }  // namespace sam2_trt

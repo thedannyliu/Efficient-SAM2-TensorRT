@@ -46,7 +46,8 @@ class Tracker {
       int max_objects = 8, int track_concurrency = 8,
       int track_bucket_size = 1, int track_bucket_min_objects = 4,
       bool fused_state_gather = false,
-      std::vector<int> track_bucket_router = {});
+      std::vector<int> track_bucket_router = {},
+      bool track_cuda_graph = false);
   ~Tracker();
   Tracker(const Tracker&) = delete;
   Tracker& operator=(const Tracker&) = delete;

@@ -33,7 +33,7 @@ class Engine {
  public:
   explicit Engine(
       const std::string& plan_path, bool profile_zero_only = false,
-      int context_copies = 1);
+      int context_copies = 1, bool cuda_graph = false);
   ~Engine();
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -48,12 +48,20 @@ class Engine {
 
  private:
   class Logger;
+  struct GraphCache {
+    cudaGraph_t graph{};
+    cudaGraphExec_t executable{};
+    std::vector<std::uintptr_t> signature;
+  };
+  static void clear_graph(GraphCache& cache);
   std::unique_ptr<Logger> logger_;
   nvinfer1::IRuntime* runtime_{};
   nvinfer1::ICudaEngine* engine_{};
   std::vector<nvinfer1::IExecutionContext*> contexts_;
   int profile_count_{};
   int context_copies_{};
+  bool cuda_graph_{};
+  std::vector<GraphCache> graph_caches_;
 };
 
 }  // namespace sam2_trt

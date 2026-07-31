@@ -27,17 +27,23 @@ double average(const std::vector<double>& values) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 5) {
+  if (argc < 2 || argc > 6) {
     std::cerr
-        << "usage: tracker_fused_gather_ab BUNDLE [OBJECTS] [WARMUP] [RUNS]\n";
+        << "usage: tracker_fused_gather_ab BUNDLE [OBJECTS] [WARMUP] [RUNS] "
+           "[fused|cuda_graph]\n";
     return 2;
   }
   const std::string bundle = argv[1];
   const int objects = argc > 2 ? std::atoi(argv[2]) : 4;
   const int warmup = argc > 3 ? std::atoi(argv[3]) : 20;
   const int runs = argc > 4 ? std::atoi(argv[4]) : 100;
+  const std::string mode = argc > 5 ? argv[5] : "fused";
   if (objects < 1 || objects > 8 || warmup < 16 || runs < 1) {
     std::cerr << "invalid objects, warmup, or runs\n";
+    return 2;
+  }
+  if (mode != "fused" && mode != "cuda_graph") {
+    std::cerr << "mode must be fused or cuda_graph\n";
     return 2;
   }
 
@@ -45,10 +51,13 @@ int main(int argc, char** argv) {
   constexpr int height = 480;
   constexpr int channels = 3;
   const int concurrency = std::min(objects, 4);
+  const bool candidate_fused_gather = mode == "fused";
+  const bool candidate_cuda_graph = mode == "cuda_graph";
   sam2_trt::Tracker baseline(
       bundle, "fp16", 8, concurrency, 1, 4, false);
   sam2_trt::Tracker candidate(
-      bundle, "fp16", 8, concurrency, 1, 4, true);
+      bundle, "fp16", 8, concurrency, 1, 4, candidate_fused_gather, {},
+      candidate_cuda_graph);
   for (int object = 0; object < objects; ++object) {
     const float fraction =
         static_cast<float>(object + 1) / static_cast<float>(objects + 1);
@@ -122,6 +131,7 @@ int main(int argc, char** argv) {
           ? 1.0
           : static_cast<double>(intersection) / union_count;
   std::cout << "{\n"
+            << "  \"mode\": \"" << mode << "\",\n"
             << "  \"objects\": " << objects << ",\n"
             << "  \"warmup\": " << warmup << ",\n"
             << "  \"runs\": " << runs << ",\n"

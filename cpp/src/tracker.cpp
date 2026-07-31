@@ -166,14 +166,16 @@ struct Tracker::Impl {
   Impl(
       const std::string& root, const std::string& precision, int maximum,
       int concurrency, int bucket_size, int bucket_minimum,
-      bool use_fused_state_gather, std::vector<int> bucket_router)
+      bool use_fused_state_gather, std::vector<int> bucket_router,
+      bool use_track_cuda_graph)
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
         track(
             (std::filesystem::path(root) /
              ("track_step." + precision + ".engine")).string(),
-            maximum_bucket_size(bucket_size, bucket_router) == 1, maximum),
+            maximum_bucket_size(bucket_size, bucket_router) == 1, maximum,
+            use_track_cuda_graph),
         maximum_objects(maximum),
         track_concurrency(concurrency),
         track_bucket_size(bucket_size),
@@ -759,11 +761,11 @@ Tracker::Tracker(
     const std::string& bundle, const std::string& precision, int maximum,
     int track_concurrency, int track_bucket_size,
     int track_bucket_min_objects, bool fused_state_gather,
-    std::vector<int> track_bucket_router)
+    std::vector<int> track_bucket_router, bool track_cuda_graph)
     : impl_(std::make_unique<Impl>(
           bundle, precision, maximum, track_concurrency, track_bucket_size,
           track_bucket_min_objects, fused_state_gather,
-          std::move(track_bucket_router))) {}
+          std::move(track_bucket_router), track_cuda_graph)) {}
 Tracker::~Tracker() = default;
 
 int Tracker::add_object(const Prompt& prompt) {
