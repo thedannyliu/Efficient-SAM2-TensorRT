@@ -15,6 +15,7 @@ from .validate import accuracy_gate, write_gate_result
 from .trt_benchmark import benchmark_engine, write_engine_benchmark
 from .pytorch_benchmark import benchmark_pytorch_graphs, write_pytorch_graph_benchmark
 from .prompt_parity import compare_prompt_masks
+from .mask_prompt_parity import compare_mask_prompt
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -188,6 +189,25 @@ def _parser() -> argparse.ArgumentParser:
     prompt.add_argument("--box", nargs=4, type=float, metavar=("X0", "Y0", "X1", "Y1"))
     prompt_parity.add_argument("--output-dir", required=True)
 
+    mask_parity = subparsers.add_parser(
+        "compare-mask-prompt",
+        help="compare PyTorch and TensorRT mask initialization state",
+    )
+    mask_parity.add_argument("--model-id", required=True)
+    mask_parity.add_argument("--checkpoint")
+    mask_parity.add_argument("--downstream-checkpoint")
+    mask_parity.add_argument("--registry")
+    mask_parity.add_argument("--sam2-root", required=True)
+    mask_parity.add_argument("--distill-root")
+    mask_parity.add_argument("--bundle-dir", required=True)
+    mask_parity.add_argument(
+        "--precision",
+        choices=("fp32", "tf32", "fp16", "bf16"),
+        required=True,
+    )
+    mask_parity.add_argument("--samples", required=True)
+    mask_parity.add_argument("--output-dir", required=True)
+
     verify = subparsers.add_parser("verify-bundle", help="verify checkpoint and engine hashes")
     verify.add_argument("--bundle-dir", required=True)
     return parser
@@ -282,6 +302,24 @@ def main(argv: list[str] | None = None) -> int:
             manifest.write(manifest_path)
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         return 0 if result.passed else 2
+    if args.command == "compare-mask-prompt":
+        spec = resolve_model(
+            args.model_id,
+            registry_path=args.registry,
+            checkpoint=args.checkpoint,
+            downstream_checkpoint=args.downstream_checkpoint,
+        )
+        result = compare_mask_prompt(
+            spec,
+            sam2_root=args.sam2_root,
+            distill_root=args.distill_root,
+            bundle_dir=args.bundle_dir,
+            precision=args.precision,
+            samples=args.samples,
+            output_dir=args.output_dir,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if args.command == "benchmark":
         summary = summarize_trace(args.trace)
         Path(args.output).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
