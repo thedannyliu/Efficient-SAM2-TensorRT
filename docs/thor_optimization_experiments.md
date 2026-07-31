@@ -843,3 +843,11 @@ remain batch one and are expanded inside the graph, while state remains batch
 N. This removes the explicit C++ feature replication boundary if TensorRT
 accepts and optimizes the graph. The real engine build and parity run are
 pending; the deployed runtime does not select it.
+
+The v2 object-count router replaces the single threshold with an optional
+per-count table, for example `1,1,1,2,2,2,4,4`. A change in active object
+count selects a batch capacity without rebuilding the tracker or clearing
+temporal state. Runtime JSON reports the selected `track_bucket_route_size`.
+The current safe table is all ones because the deployed b2/b4 profiles have
+not beaten parallel b1. A non-b1 route requires a measured crossover on the
+candidate engine; merely enabling the router is not counted as acceleration.
