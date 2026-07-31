@@ -817,3 +817,29 @@ Ignored artifacts:
 results/benchmarks/mask_prompt_v2_20260730/
 bundles/sam2.1-tinyvit-5m/fp16_mask_v2_20260730/
 ```
+
+## Acceleration v2: static profiles and state packing
+
+All work below is on `opt/thor-acceleration-v2`; the stable branch, tag,
+worktree, copied bundles, and baseline container alias are independent.
+
+An isolated batch-2 track plan reduced mean latency from 58.191 to 57.560 ms
+at four memories/eight pointers (1.08%), and from 86.378 to 85.874 ms at the
+steady seven-memory/sixteen-pointer state (0.58%). Same-input full-state mask
+IoU was 0.998141 and mask cosine was 0.9999994. This is a valid but marginal
+candidate and does not rescue batch-2 bucketing. A same-day multi-profile
+control is still required because the older engine reports a TensorRT
+cross-device-model warning.
+
+Commit `5ba244d` adds an opt-in fused state gather. It turns the old sequence of
+per-memory kernels and per-pointer copies into three CUDA gathers without
+changing selected frames, temporal positions, tensor dtype, or TensorRT
+inputs. The standalone CUDA layout test passes on Thor. Commit `b7e5c69` adds
+a full deterministic tracker A/B for 1/2/4 objects; its runtime result is
+pending restored Thor access.
+
+Commit `85eab22` adds an isolated shared-image ONNX candidate. Image features
+remain batch one and are expanded inside the graph, while state remains batch
+N. This removes the explicit C++ feature replication boundary if TensorRT
+accepts and optimizes the graph. The real engine build and parity run are
+pending; the deployed runtime does not select it.
