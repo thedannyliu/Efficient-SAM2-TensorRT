@@ -110,4 +110,30 @@ inline std::vector<int> track_bucket_group_sizes(
   return result;
 }
 
+inline int track_bucket_for_object_count(
+    int object_count, int fixed_bucket_size, int minimum_objects,
+    const std::vector<int>& router = {}) {
+  if (object_count < 0)
+    throw std::invalid_argument("object count must be non-negative");
+  if (fixed_bucket_size != 1 && fixed_bucket_size != 2 &&
+      fixed_bucket_size != 4)
+    throw std::invalid_argument("track bucket size must be 1, 2, or 4");
+  if (minimum_objects < 1)
+    throw std::invalid_argument("minimum bucket objects must be positive");
+  for (const int bucket : router)
+    if (bucket != 1 && bucket != 2 && bucket != 4)
+      throw std::invalid_argument(
+          "track bucket router values must be 1, 2, or 4");
+  if (object_count == 0) return 1;
+  if (!router.empty()) {
+    if (object_count > static_cast<int>(router.size()))
+      throw std::invalid_argument(
+          "track bucket router does not cover the object count");
+    return router[static_cast<std::size_t>(object_count - 1)];
+  }
+  return fixed_bucket_size > 1 && object_count >= minimum_objects
+      ? fixed_bucket_size
+      : 1;
+}
+
 }  // namespace sam2_trt

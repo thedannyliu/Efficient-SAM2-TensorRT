@@ -1,6 +1,7 @@
 #include "sam2_trt_ros/sam2_trt_node.hpp"
 
 #include "sam2_trt/tracker.hpp"
+#include "sam2_trt/state.hpp"
 #include "sam2_trt_msgs/srv/add_mask.hpp"
 #include "sam2_trt_msgs/srv/add_object.hpp"
 #include "sam2_trt_msgs/srv/switch_model.hpp"
@@ -32,6 +33,31 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+namespace {
+
+std::vector<int> parse_bucket_router(
+    const std::string& value, int maximum_objects) {
+  if (value.empty()) return {};
+  std::vector<int> result;
+  std::istringstream stream(value);
+  std::string token;
+  while (std::getline(stream, token, ',')) {
+    std::size_t consumed = 0;
+    const int bucket = std::stoi(token, &consumed);
+    if (consumed != token.size() ||
+        (bucket != 1 && bucket != 2 && bucket != 4))
+      throw std::invalid_argument(
+          "track_bucket_router entries must be 1, 2, or 4");
+    result.push_back(bucket);
+  }
+  if (static_cast<int>(result.size()) != maximum_objects)
+    throw std::invalid_argument(
+        "track_bucket_router must have one entry per object count");
+  return result;
+}
+
+}  // namespace
+
 class Sam2TrtNode final : public rclcpp::Node {
  public:
   using SteadyClock = std::chrono::steady_clock;
@@ -54,6 +80,10 @@ class Sam2TrtNode final : public rclcpp::Node {
     track_bucket_size_ = declare_parameter("track_bucket_size", 1);
     track_bucket_min_objects_ =
         declare_parameter("track_bucket_min_objects", 4);
+    track_bucket_router_text_ =
+        declare_parameter("track_bucket_router", "");
+    track_bucket_router_ = parse_bucket_router(
+        track_bucket_router_text_, max_objects_);
     fused_state_gather_ = declare_parameter("fused_state_gather", false);
     pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
     pipeline_overlap_max_objects_ =
@@ -71,7 +101,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     bundle_dir_ = bundle;
     tracker_ = std::make_unique<sam2_trt::Tracker>(
         bundle_dir_, precision_, max_objects_, track_concurrency_,
-        track_bucket_size_, track_bucket_min_objects_, fused_state_gather_);
+        track_bucket_size_, track_bucket_min_objects_, fused_state_gather_,
+        track_bucket_router_);
     if (!trace_path.empty()) {
       const std::filesystem::path path(trace_path);
       if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
@@ -331,7 +362,8 @@ class Sam2TrtNode final : public rclcpp::Node {
       auto replacement = std::make_unique<sam2_trt::Tracker>(
           request.bundle_dir, request.precision, max_objects_,
           track_concurrency_, track_bucket_size_,
-          track_bucket_min_objects_, fused_state_gather_);
+          track_bucket_min_objects_, fused_state_gather_,
+          track_bucket_router_);
       {
         std::lock_guard lock(tracker_mutex_);
         tracker_.swap(replacement);
@@ -589,6 +621,10 @@ class Sam2TrtNode final : public rclcpp::Node {
       if (publish_object_masks) object_mask_publisher_->publish(std::move(message));
     }
     const auto metrics_time = SteadyClock::now();
+    const int active_track_bucket =
+        sam2_trt::track_bucket_for_object_count(
+            object_count_, track_bucket_size_,
+            track_bucket_min_objects_, track_bucket_router_);
     const double callback_total_ms = milliseconds(
         metrics_time - output_pending.arrival);
     const double worker_total_ms = milliseconds(metrics_time - worker_start);
@@ -623,11 +659,11 @@ class Sam2TrtNode final : public rclcpp::Node {
          << ",\"pipeline_delay_frames\":"
          << (active_overlap ? 1 : 0)
          << ",\"track_bucket_active\":"
-         << (track_bucket_size_ > 1 &&
-                     object_count_ >= track_bucket_min_objects_
-                 ? "true"
-                 : "false")
+         << (active_track_bucket > 1 ? "true" : "false")
          << ",\"track_bucket_size\":" << track_bucket_size_
+         << ",\"track_bucket_route_size\":" << active_track_bucket
+         << ",\"track_bucket_router\":\""
+         << track_bucket_router_text_ << '"'
          << ",\"track_bucket_min_objects\":"
          << track_bucket_min_objects_
          << ",\"fused_state_gather\":"
@@ -706,6 +742,8 @@ class Sam2TrtNode final : public rclcpp::Node {
   int track_concurrency_{};
   int track_bucket_size_{};
   int track_bucket_min_objects_{};
+  std::vector<int> track_bucket_router_;
+  std::string track_bucket_router_text_;
   bool fused_state_gather_{};
   bool pipeline_overlap_{};
   int pipeline_overlap_max_objects_{};

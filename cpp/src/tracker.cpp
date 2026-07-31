@@ -89,6 +89,12 @@ int profile_for_batch(int batch) {
   throw std::invalid_argument("unsupported object batch");
 }
 
+int maximum_bucket_size(
+    int fixed_bucket_size, const std::vector<int>& router) {
+  if (router.empty()) return fixed_bucket_size;
+  return *std::max_element(router.begin(), router.end());
+}
+
 }  // namespace
 
 struct Tracker::Impl {
@@ -143,6 +149,8 @@ struct Tracker::Impl {
   int track_concurrency;
   int track_bucket_size;
   int track_bucket_min_objects;
+  std::vector<int> track_bucket_router;
+  int track_scratch_batch;
   bool fused_state_gather;
   int next_id{1};
   int frame_index{0};
@@ -158,18 +166,21 @@ struct Tracker::Impl {
   Impl(
       const std::string& root, const std::string& precision, int maximum,
       int concurrency, int bucket_size, int bucket_minimum,
-      bool use_fused_state_gather)
+      bool use_fused_state_gather, std::vector<int> bucket_router)
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
         track(
             (std::filesystem::path(root) /
              ("track_step." + precision + ".engine")).string(),
-            bucket_size == 1, maximum),
+            maximum_bucket_size(bucket_size, bucket_router) == 1, maximum),
         maximum_objects(maximum),
         track_concurrency(concurrency),
         track_bucket_size(bucket_size),
         track_bucket_min_objects(bucket_minimum),
+        track_bucket_router(std::move(bucket_router)),
+        track_scratch_batch(maximum_bucket_size(
+            bucket_size, track_bucket_router)),
         fused_state_gather(use_fused_state_gather) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
     if (concurrency < 1 || concurrency > maximum)
@@ -179,6 +190,12 @@ struct Tracker::Impl {
     if (bucket_minimum < 1)
       throw std::invalid_argument(
           "track_bucket_min_objects must be positive");
+    if (!track_bucket_router.empty() &&
+        static_cast<int>(track_bucket_router.size()) != maximum)
+      throw std::invalid_argument(
+          "track bucket router must have one entry per object count");
+    track_bucket_for_object_count(
+        maximum, bucket_size, bucket_minimum, track_bucket_router);
     const auto mask_engine_path = std::filesystem::path(root) /
         ("prompt_mask_step." + precision + ".engine");
     if (std::filesystem::is_regular_file(mask_engine_path))
@@ -194,21 +211,26 @@ struct Tracker::Impl {
       auto& scratch = track_scratch[static_cast<std::size_t>(index)];
       const auto object_stream = track_streams[static_cast<std::size_t>(index)];
       scratch.memory = allocate_tensor(
-          {7, 4096, bucket_size, 64}, dtype, object_stream);
+          {7, 4096, track_scratch_batch, 64}, dtype, object_stream);
       scratch.memory_position = allocate_tensor(
-          {7, 4096, bucket_size, 64}, dtype, object_stream);
+          {7, 4096, track_scratch_batch, 64}, dtype, object_stream);
       scratch.object_pointers = allocate_tensor(
-          {16, bucket_size, 256}, dtype, object_stream);
+          {16, track_scratch_batch, 256}, dtype, object_stream);
       scratch.memory_sources = allocate_tensor(
-          {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+          {7, track_scratch_batch}, nvinfer1::DataType::kINT64,
+          object_stream);
       scratch.memory_position_sources = allocate_tensor(
-          {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+          {7, track_scratch_batch}, nvinfer1::DataType::kINT64,
+          object_stream);
       scratch.pointer_sources = allocate_tensor(
-          {16, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+          {16, track_scratch_batch}, nvinfer1::DataType::kINT64,
+          object_stream);
       scratch.temporal = allocate_tensor(
-          {7, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+          {7, track_scratch_batch}, nvinfer1::DataType::kINT64,
+          object_stream);
       scratch.distance = allocate_tensor(
-          {16, bucket_size}, nvinfer1::DataType::kINT64, object_stream);
+          {16, track_scratch_batch}, nvinfer1::DataType::kINT64,
+          object_stream);
     }
     check_cuda(cudaEventCreate(&gpu_start));
     check_cuda(cudaEventCreate(&encoder_end));
@@ -636,10 +658,12 @@ struct Tracker::Impl {
     };
     for (auto& [key, entries] : buckets) {
       std::size_t start = 0;
+      const int active_bucket = track_bucket_for_object_count(
+          static_cast<int>(objects.size()), track_bucket_size,
+          track_bucket_min_objects, track_bucket_router);
       for (const int group_size : track_bucket_group_sizes(
                static_cast<int>(entries.size()),
-               static_cast<int>(objects.size()), track_bucket_size,
-               track_bucket_min_objects)) {
+               static_cast<int>(objects.size()), active_bucket, 1)) {
         std::vector<ObjectState*> group;
         std::vector<SelectedState<std::shared_ptr<FrameState>>> selections;
         group.reserve(static_cast<std::size_t>(group_size));
@@ -734,10 +758,12 @@ struct Tracker::Impl {
 Tracker::Tracker(
     const std::string& bundle, const std::string& precision, int maximum,
     int track_concurrency, int track_bucket_size,
-    int track_bucket_min_objects, bool fused_state_gather)
+    int track_bucket_min_objects, bool fused_state_gather,
+    std::vector<int> track_bucket_router)
     : impl_(std::make_unique<Impl>(
           bundle, precision, maximum, track_concurrency, track_bucket_size,
-          track_bucket_min_objects, fused_state_gather)) {}
+          track_bucket_min_objects, fused_state_gather,
+          std::move(track_bucket_router))) {}
 Tracker::~Tracker() = default;
 
 int Tracker::add_object(const Prompt& prompt) {

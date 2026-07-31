@@ -24,6 +24,13 @@ int main() {
           std::vector<int>{2, 1}));
   assert((sam2_trt::track_bucket_group_sizes(2, 2, 4, 4) ==
           std::vector<int>{1, 1}));
+  assert(sam2_trt::track_bucket_for_object_count(1, 4, 4) == 1);
+  assert(sam2_trt::track_bucket_for_object_count(4, 4, 4) == 4);
+  const std::vector<int> router{1, 1, 2, 2, 4, 4, 4, 4};
+  assert(sam2_trt::track_bucket_for_object_count(2, 1, 4, router) == 1);
+  assert(sam2_trt::track_bucket_for_object_count(3, 1, 4, router) == 2);
+  assert(sam2_trt::track_bucket_for_object_count(8, 1, 4, router) == 4);
+  assert(sam2_trt::track_bucket_for_object_count(0, 1, 4, router) == 1);
 
   std::map<int, int> many_conditioning{{0, 0}, {4, 4}, {8, 8}, {12, 12}};
   const auto [closest, remaining] =
