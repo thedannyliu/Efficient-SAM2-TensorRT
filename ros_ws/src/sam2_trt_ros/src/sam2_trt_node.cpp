@@ -86,6 +86,8 @@ class Sam2TrtNode final : public rclcpp::Node {
         track_bucket_router_text_, max_objects_);
     fused_state_gather_ = declare_parameter("fused_state_gather", false);
     track_cuda_graph_ = declare_parameter("track_cuda_graph", false);
+    track_cuda_graph_max_objects_ =
+        declare_parameter("track_cuda_graph_max_objects", 1);
     pipeline_overlap_ = declare_parameter("pipeline_overlap", false);
     pipeline_overlap_max_objects_ =
         declare_parameter("pipeline_overlap_max_objects", 1);
@@ -103,7 +105,8 @@ class Sam2TrtNode final : public rclcpp::Node {
     tracker_ = std::make_unique<sam2_trt::Tracker>(
         bundle_dir_, precision_, max_objects_, track_concurrency_,
         track_bucket_size_, track_bucket_min_objects_, fused_state_gather_,
-        track_bucket_router_, track_cuda_graph_);
+        track_bucket_router_, track_cuda_graph_,
+        track_cuda_graph_max_objects_);
     if (!trace_path.empty()) {
       const std::filesystem::path path(trace_path);
       if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
@@ -364,7 +367,8 @@ class Sam2TrtNode final : public rclcpp::Node {
           request.bundle_dir, request.precision, max_objects_,
           track_concurrency_, track_bucket_size_,
           track_bucket_min_objects_, fused_state_gather_,
-          track_bucket_router_, track_cuda_graph_);
+          track_bucket_router_, track_cuda_graph_,
+          track_cuda_graph_max_objects_);
       {
         std::lock_guard lock(tracker_mutex_);
         tracker_.swap(replacement);
@@ -684,6 +688,8 @@ class Sam2TrtNode final : public rclcpp::Node {
          << (fused_state_gather_ ? "true" : "false")
          << ",\"track_cuda_graph\":"
          << (track_cuda_graph_ ? "true" : "false")
+         << ",\"track_cuda_graph_max_objects\":"
+         << track_cuda_graph_max_objects_
          << ",\"color_convert_ms\":" << milliseconds(color_end - color_start)
          << ",\"inference_ms\":" << milliseconds(inference_end - inference_start)
          << ",\"host_input_copy_ms\":" << tracker_timings.host_input_copy_ms
@@ -762,6 +768,7 @@ class Sam2TrtNode final : public rclcpp::Node {
   std::string track_bucket_router_text_;
   bool fused_state_gather_{};
   bool track_cuda_graph_{};
+  int track_cuda_graph_max_objects_{};
   bool pipeline_overlap_{};
   int pipeline_overlap_max_objects_{};
   bool pipeline_overlap_active_{};

@@ -145,7 +145,7 @@ std::map<std::string, DeviceTensor> Engine::run(
 void Engine::run_into(
     const std::map<std::string, DeviceTensor>& inputs, int profile,
     cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs,
-    int context_copy) {
+    int context_copy, bool allow_cuda_graph) {
   if (profile < 0 || profile >= profile_count_)
     throw std::out_of_range("invalid TensorRT optimization profile");
   if (context_copy < 0 || context_copy >= context_copies_)
@@ -184,7 +184,7 @@ void Engine::run_into(
     if (!context->setTensorAddress(raw_name, existing->second.data))
       throw std::runtime_error("setTensorAddress failed: " + name);
   }
-  if (!cuda_graph_) {
+  if (!cuda_graph_ || !allow_cuda_graph) {
     if (!context->enqueueV3(stream))
       throw std::runtime_error("TensorRT enqueueV3 failed");
     return;

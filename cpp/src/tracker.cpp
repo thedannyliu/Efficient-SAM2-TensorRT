@@ -151,6 +151,7 @@ struct Tracker::Impl {
   int track_bucket_min_objects;
   std::vector<int> track_bucket_router;
   int track_scratch_batch;
+  int track_cuda_graph_max_objects;
   bool fused_state_gather;
   int next_id{1};
   int frame_index{0};
@@ -167,7 +168,7 @@ struct Tracker::Impl {
       const std::string& root, const std::string& precision, int maximum,
       int concurrency, int bucket_size, int bucket_minimum,
       bool use_fused_state_gather, std::vector<int> bucket_router,
-      bool use_track_cuda_graph)
+      bool use_track_cuda_graph, int cuda_graph_max_objects)
       : encoder((std::filesystem::path(root) / ("encoder." + precision + ".engine")).string()),
         point_prompt((std::filesystem::path(root) / ("prompt_point_step." + precision + ".engine")).string()),
         box_prompt((std::filesystem::path(root) / ("prompt_box_step." + precision + ".engine")).string()),
@@ -183,6 +184,7 @@ struct Tracker::Impl {
         track_bucket_router(std::move(bucket_router)),
         track_scratch_batch(maximum_bucket_size(
             bucket_size, track_bucket_router)),
+        track_cuda_graph_max_objects(cuda_graph_max_objects),
         fused_state_gather(use_fused_state_gather) {
     if (maximum < 1 || maximum > 8) throw std::invalid_argument("max_objects must be in [1, 8]");
     if (concurrency < 1 || concurrency > maximum)
@@ -192,6 +194,9 @@ struct Tracker::Impl {
     if (bucket_minimum < 1)
       throw std::invalid_argument(
           "track_bucket_min_objects must be positive");
+    if (cuda_graph_max_objects < 1 || cuda_graph_max_objects > maximum)
+      throw std::invalid_argument(
+          "track_cuda_graph_max_objects must be in [1, max_objects]");
     if (!track_bucket_router.empty() &&
         static_cast<int>(track_bucket_router.size()) != maximum)
       throw std::invalid_argument(
@@ -603,7 +608,8 @@ struct Tracker::Impl {
     auto& output = track_outputs.at(slot);
     track.run_into(
         inputs, profile_for_batch(batch), execution_stream, output,
-        static_cast<int>(slot));
+        static_cast<int>(slot),
+        static_cast<int>(objects.size()) <= track_cuda_graph_max_objects);
     for (std::size_t index = 0; index < group.size(); ++index)
       save_outputs(
           *group[index], output, index, false, execution_stream);
@@ -761,11 +767,13 @@ Tracker::Tracker(
     const std::string& bundle, const std::string& precision, int maximum,
     int track_concurrency, int track_bucket_size,
     int track_bucket_min_objects, bool fused_state_gather,
-    std::vector<int> track_bucket_router, bool track_cuda_graph)
+    std::vector<int> track_bucket_router, bool track_cuda_graph,
+    int track_cuda_graph_max_objects)
     : impl_(std::make_unique<Impl>(
           bundle, precision, maximum, track_concurrency, track_bucket_size,
           track_bucket_min_objects, fused_state_gather,
-          std::move(track_bucket_router), track_cuda_graph)) {}
+          std::move(track_bucket_router), track_cuda_graph,
+          track_cuda_graph_max_objects)) {}
 Tracker::~Tracker() = default;
 
 int Tracker::add_object(const Prompt& prompt) {
