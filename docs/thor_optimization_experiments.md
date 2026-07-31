@@ -851,3 +851,52 @@ temporal state. Runtime JSON reports the selected `track_bucket_route_size`.
 The current safe table is all ones because the deployed b2/b4 profiles have
 not beaten parallel b1. A non-b1 route requires a measured crossover on the
 candidate engine; merely enabling the router is not counted as acceleration.
+
+## CUDA Graph and batch-1-only engine results
+
+Date: 2026-07-31. Revisions `6511936`, `84f806d`, and `2156751` add
+persistent-address CUDA Graph execution to the C++ TensorRT wrapper, a
+capture-failure fallback, and an object-count safety limit. The feature is
+off by default. When enabled, `track_cuda_graph_max_objects:=1` prevents the
+graph path from being used after a second object is added.
+
+The engine-only upper-bound experiment measured:
+
+| Track state | Normal enqueue | CUDA Graph | Latency reduction |
+|---|---:|---:|---:|
+| 4 memories / 8 pointers | 15.135 ms | 14.675 ms | 3.04% |
+| 7 memories / 16 pointers | 21.629 ms | 21.205 ms | 1.96% |
+
+The live C++ tracker was then measured three times with warm-up 30 and 300
+frames per run. Mean baseline/candidate latency was 30.251/29.958 ms, a 0.97%
+reduction. Every single-object mask pixel agreed. Thread-local capture was
+also tested above one object, but it did not improve two- or four-object
+latency and an eight-object temporal run diverged. CUDA Graph is therefore
+kept as an experimental single-object switch, not a quality-first default.
+
+Raw ignored artifacts:
+
+```text
+~/Efficient-SAM2-TensorRT/results/benchmarks/cuda_graph_v2_20260731/
+~/Efficient-SAM2-TensorRT/results/cuda_graph_b1_repeat_20260731/
+~/Efficient-SAM2-TensorRT/results/cuda_graph_threadlocal_20260731/
+```
+
+A separate native-Thor track engine containing only the batch-1 profile was
+built from the same FP16 ONNX with builder level 5, zero auxiliary streams,
+and the seven-memory/sixteen-pointer optimization point. It took 311.314
+seconds to build. Three interleaved 300-run engine tests produced:
+
+| Candidate | Mean full-state latency |
+|---|---:|
+| Existing multi-profile engine | 21.590 ms |
+| Batch-1-only engine | 21.448 ms |
+
+The reduction is only 0.66%. Same-input binary mask IoU was 0.999253 and
+reported output cosines were at least 0.9999997. The candidate passes the
+quality gate but is rejected for deployment because the speed difference is
+below the 3% consideration threshold.
+
+```text
+~/Efficient-SAM2-TensorRT/results/benchmarks/track_b1_native_20260731/
+```
