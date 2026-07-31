@@ -13,6 +13,7 @@ from .model_registry import load_registry, resolve_model
 from .probe import write_probe
 from .validate import accuracy_gate, write_gate_result
 from .trt_benchmark import benchmark_engine, write_engine_benchmark
+from .engine_parity import compare_engines, write_engine_parity
 from .pytorch_benchmark import benchmark_pytorch_graphs, write_pytorch_graph_benchmark
 from .prompt_parity import compare_prompt_masks
 from .mask_prompt_parity import compare_mask_prompt
@@ -152,9 +153,42 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     engine_benchmark.add_argument("--batch", type=int, choices=(1, 2, 4, 8), default=1)
+    engine_benchmark.add_argument(
+        "--shape-endpoint",
+        choices=("min", "opt", "max"),
+        default="opt",
+    )
     engine_benchmark.add_argument("--warmup", type=int, default=20)
     engine_benchmark.add_argument("--runs", type=int, default=100)
     engine_benchmark.add_argument("--output", required=True)
+
+    engine_parity = subparsers.add_parser(
+        "compare-engine",
+        help="compare two TensorRT engines on identical synthetic inputs",
+    )
+    engine_parity.add_argument("--baseline", required=True)
+    engine_parity.add_argument("--candidate", required=True)
+    engine_parity.add_argument(
+        "--role",
+        choices=(
+            "encoder",
+            "prompt_point_step",
+            "prompt_box_step",
+            "prompt_mask_step",
+            "track_step",
+        ),
+        required=True,
+    )
+    engine_parity.add_argument(
+        "--batch", type=int, choices=(1, 2, 4, 8), default=1
+    )
+    engine_parity.add_argument(
+        "--shape-endpoint",
+        choices=("min", "opt", "max"),
+        default="max",
+    )
+    engine_parity.add_argument("--seed", type=int, default=0)
+    engine_parity.add_argument("--output", required=True)
 
     pytorch_graphs = subparsers.add_parser(
         "benchmark-pytorch-graphs", help="microbenchmark the matching PyTorch export graphs"
@@ -330,10 +364,23 @@ def main(argv: list[str] | None = None) -> int:
             args.engine,
             role=args.role,
             batch=args.batch,
+            shape_endpoint=args.shape_endpoint,
             warmup=args.warmup,
             runs=args.runs,
         )
         write_engine_benchmark(result, args.output)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "compare-engine":
+        result = compare_engines(
+            args.baseline,
+            args.candidate,
+            role=args.role,
+            batch=args.batch,
+            shape_endpoint=args.shape_endpoint,
+            seed=args.seed,
+        )
+        write_engine_parity(result, args.output)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     if args.command == "benchmark-pytorch-graphs":

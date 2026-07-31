@@ -31,6 +31,7 @@ def benchmark_engine(
     *,
     role: str,
     batch: int = 1,
+    shape_endpoint: str = "opt",
     warmup: int = 20,
     runs: int = 100,
 ) -> dict[str, object]:
@@ -39,6 +40,8 @@ def benchmark_engine(
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for TensorRT benchmarking")
+    if shape_endpoint not in {"min", "opt", "max"}:
+        raise ValueError("shape endpoint must be min, opt, or max")
     logger = trt.Logger(trt.Logger.WARNING)
     runtime = trt.Runtime(logger)
     engine = runtime.deserialize_cuda_engine(Path(engine_path).read_bytes())
@@ -61,7 +64,11 @@ def benchmark_engine(
     for index in range(engine.num_io_tensors):
         name = engine.get_tensor_name(index)
         if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
-            shape = (1, 3, 1024, 1024) if role == "encoder" else _shape_for(role, name, batch, "opt")
+            shape = (
+                (1, 3, 1024, 1024)
+                if role == "encoder"
+                else _shape_for(role, name, batch, shape_endpoint)
+            )
             if not context.set_input_shape(name, shape):
                 raise RuntimeError(f"TensorRT rejected shape {shape} for {name}")
             inputs.append(name)
@@ -103,6 +110,7 @@ def benchmark_engine(
         "engine": str(Path(engine_path).resolve()),
         "role": role,
         "batch": batch,
+        "shape_endpoint": shape_endpoint,
         "profile": profile,
         "warmup": warmup,
         "runs": runs,
