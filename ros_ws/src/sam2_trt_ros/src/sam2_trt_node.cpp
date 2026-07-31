@@ -459,19 +459,32 @@ class Sam2TrtNode final : public rclcpp::Node {
     labels.step = static_cast<std::uint32_t>(preview_width_);
     labels.data.assign(
         static_cast<std::size_t>(labels.step) * labels.height, 0);
-    for (int y = 0; y < preview_height_; ++y) {
-      const int source_y = std::min(
+    std::vector<int> source_x(preview_width_);
+    std::vector<int> source_y(preview_height_);
+    for (int x = 0; x < preview_width_; ++x)
+      source_x[x] = std::min(
+          static_cast<int>(frame.width) - 1,
+          x * static_cast<int>(frame.width) / preview_width_);
+    for (int y = 0; y < preview_height_; ++y)
+      source_y[y] = std::min(
           static_cast<int>(frame.height) - 1,
           y * static_cast<int>(frame.height) / preview_height_);
-      for (int x = 0; x < preview_width_; ++x) {
-        const int source_x = std::min(
-            static_cast<int>(frame.width) - 1,
-            x * static_cast<int>(frame.width) / preview_width_);
-        for (const auto& mask : masks) {
-          const auto mask_x = std::min(mask.width - 1, source_x);
-          const auto mask_y = std::min(mask.height - 1, source_y);
+    for (const auto& mask : masks) {
+      if (mask.width == preview_width_ && mask.height == preview_height_ &&
+          static_cast<int>(frame.width) == preview_width_ &&
+          static_cast<int>(frame.height) == preview_height_) {
+        for (std::size_t index = 0; index < mask.mono8.size(); ++index)
+          if (mask.mono8[index] != 0)
+            labels.data[index] = static_cast<std::uint8_t>(mask.object_id);
+        continue;
+      }
+      for (int y = 0; y < preview_height_; ++y) {
+        const int mask_y = std::min(mask.height - 1, source_y[y]);
+        for (int x = 0; x < preview_width_; ++x) {
+          const int mask_x = std::min(mask.width - 1, source_x[x]);
           if (mask.mono8[
-                  static_cast<std::size_t>(mask_y) * mask.width + mask_x] != 0)
+                  static_cast<std::size_t>(mask_y) * mask.width +
+                  mask_x] != 0)
             labels.data[
                 static_cast<std::size_t>(y) * preview_width_ + x] =
                 static_cast<std::uint8_t>(mask.object_id);
