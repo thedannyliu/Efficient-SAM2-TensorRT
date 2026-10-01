@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 export = ["onnx>=1.16", "onnxscript>=0.2", "torch>=2.5"]
-test = ["pytest>=8.0"]
+test = ["pytest>=8.0", "torch>=2.5", "onnx>=1.16"]
 
 [project.scripts]
 sam2-trt = "sam2_trt.cli:main"
