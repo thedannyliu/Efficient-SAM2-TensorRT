@@ -2,7 +2,7 @@
 
 A Python export toolchain and C++/CUDA runtime for deploying SAM2.1 and distilled TinyViT encoders through ROS 2. The engineering focus is preserving per-object tracking state while reducing inference latency on embedded hardware.
 
-**Start here:** [measured results](#measured-results) · [runtime design](#runtime-design) · [CPU checks](#run-the-cpu-checks) · [Thor deployment guide](docs/thor_testing_guide.md)
+**Start here:** [measured results](#measured-results) · [runtime design](docs/architecture.md) · [CPU checks](#run-the-cpu-checks) · [Thor deployment guide](docs/thor_testing_guide.md)
 
 ## Measured results
 
