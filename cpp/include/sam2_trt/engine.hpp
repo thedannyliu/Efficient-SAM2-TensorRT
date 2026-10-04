@@ -12,11 +12,14 @@
 
 namespace sam2_trt {
 
+// Stream-aware deleter used by shared DeviceTensor allocations.
 struct CudaDeleter {
   cudaStream_t stream{};
   void operator()(void* pointer) const noexcept;
 };
 
+// Owning or aliased view of a typed tensor in CUDA device memory.
+// `storage` controls lifetime while `data` may point at a batch slice.
 struct DeviceTensor {
   std::shared_ptr<void> storage;
   void* data{};
@@ -29,6 +32,8 @@ DeviceTensor allocate_tensor(
     std::vector<int64_t> shape, nvinfer1::DataType dtype, cudaStream_t stream);
 std::size_t element_size(nvinfer1::DataType dtype);
 
+// Thin TensorRT plan wrapper. It validates named bindings and dynamic shapes,
+// owns execution contexts, and enqueues work on the caller-provided stream.
 class Engine {
  public:
   explicit Engine(
@@ -38,8 +43,10 @@ class Engine {
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
+  // Allocate outputs for a one-off call.
   std::map<std::string, DeviceTensor> run(
       const std::map<std::string, DeviceTensor>& inputs, int profile, cudaStream_t stream);
+  // Reuse compatible output buffers across frames to avoid allocator churn.
   void run_into(
       const std::map<std::string, DeviceTensor>& inputs, int profile,
       cudaStream_t stream, std::map<std::string, DeviceTensor>& outputs,
